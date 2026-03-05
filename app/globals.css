@@ -1,0 +1,110 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* Animations */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.8s ease-out forwards;
+}
+
+/* Grid Pattern Background */
+.grid-pattern {
+  background-color: #f8fafc;
+  background-image: 
+    linear-gradient(rgba(99, 102, 241, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+.grid-pattern-dark {
+  background-color: #1e293b;
+  background-image: 
+    linear-gradient(rgba(99, 102, 241, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.1) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+/* Dot Pattern Background */
+.dot-pattern {
+  background-color: #f8fafc;
+  background-image: radial-gradient(rgba(99, 102, 241, 0.15) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Animated Grid */
+@keyframes gridMove {
+  0% {
+    background-position: 0 0;
+  }
+  100% {
+    background-position: 50px 50px;
+  }
+}
+
+.grid-pattern-animated {
+  background-color: #f8fafc;
+  background-image: 
+    linear-gradient(rgba(99, 102, 241, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(99, 102, 241, 0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+  animation: gridMove 20s linear infinite;
+}
+
+/* Float Animation for Particles */
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0) translateX(0);
+    opacity: 0.1;
+  }
+  25% {
+    transform: translateY(-20px) translateX(10px);
+    opacity: 0.3;
+  }
+  50% {
+    transform: translateY(-40px) translateX(-10px);
+    opacity: 0.5;
+  }
+  75% {
+    transform: translateY(-20px) translateX(10px);
+    opacity: 0.3;
+  }
+}
+
+.animate-float {
+  animation: float 5s ease-in-out infinite;
+}
