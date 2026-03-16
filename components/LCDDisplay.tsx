@@ -1,50 +1,44 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Monitor } from "lucide-react";
+import { useEffect, useState } from "react";
 
 interface Props {
-  subscribe: (topic: string, callback: (message: string) => void) => void;
+  subscribe: (topic: string, callback: (message: string) => void) => (() => void) | void;
+  publish?: (topic: string, message: string) => void;
 }
 
-export default function LCDDisplay({ subscribe }: Props) {
-  const [lcdMessage, setLcdMessage] = useState("System Siap Digunakan");
+export default function LCDDisplay({ subscribe, publish }: Props) {
+  const [text, setText] = useState("Menunggu data...");
 
   useEffect(() => {
-    const unsubscribeLcd = subscribe("iot/door/lcd", (message) => {
-      setLcdMessage(message);
+    const unsubscribe = subscribe("iot/lcd/display", (message) => {
+      setText(message);
     });
 
     return () => {
-      if (unsubscribeLcd) unsubscribeLcd();
+      if (unsubscribe) unsubscribe();
     };
   }, [subscribe]);
 
+  const sendTest = () => {
+    if (!publish) return;
+    publish("iot/lcd/display", `Hello from dashboard @ ${new Date().toLocaleTimeString()}`);
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-lg p-6">
-      <div className="flex items-center gap-3 mb-4">
-        <Monitor className="w-8 h-8 text-green-600" />
-        <h2 className="text-xl font-bold text-gray-800">LCD Display Monitor</h2>
+      <h3 className="text-lg font-bold text-gray-800 mb-3">LCD Display</h3>
+      <div className="min-h-[96px] p-4 bg-black text-green-300 font-mono rounded-lg">
+        {text}
       </div>
-
-      {/* LCD Display Simulation */}
-      <div className="bg-gradient-to-br from-green-900 to-green-800 text-green-300 p-6 rounded-xl font-mono border-4 border-green-700 shadow-inner">
-        <div className="text-xs text-green-400 mb-2 text-center opacity-70">
-          LCD Display:
-        </div>
-        <div className="text-xl font-bold text-center leading-relaxed tracking-wide">
-          {lcdMessage}
-        </div>
-        <div className="mt-3 flex justify-center gap-1">
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }}></div>
-          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }}></div>
-        </div>
-      </div>
-
-      <div className="mt-4 text-xs text-gray-600 text-center bg-blue-50 p-2 rounded">
-        💡 Menampilkan pesan real-time dari LCD fisik ESP32
-      </div>
+      {publish ? (
+        <button
+          onClick={sendTest}
+          className="mt-4 px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+        >
+          Kirim teks percobaan
+        </button>
+      ) : null}
     </div>
   );
 }
