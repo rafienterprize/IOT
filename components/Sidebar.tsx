@@ -1,28 +1,36 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter, usePathname } from "next/navigation";
 import { Lightbulb, Wind, Fish, Trash2, CloudRain, Menu, X, Home, Wifi, DoorOpen, Activity } from "lucide-react";
 
 interface Props {
-  activeSection: string;
-  onSectionChange: (section: string) => void;
   isConnected: boolean;
 }
 
-export default function Sidebar({ activeSection, onSectionChange, isConnected }: Props) {
+export default function Sidebar({ isConnected }: Props) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(true);
 
   const menuItems = [
-    { id: "dashboard", label: "Dashboard", icon: Home },
-    { id: "devices", label: "Device Status", icon: Wifi },
-    { id: "ping", label: "Network Ping", icon: Activity },
-    { id: "door", label: "Smart Door", icon: DoorOpen },
-    { id: "lamp", label: "Smart Lamp", icon: Lightbulb },
-    { id: "gas", label: "Gas Detector", icon: Wind },
-    { id: "feeder", label: "Fish Feeder", icon: Fish },
-    { id: "trash", label: "Smart Trash", icon: Trash2 },
-    { id: "clothesline", label: "Jemuran", icon: CloudRain },
+    { id: "dashboard", label: "Dashboard", icon: Home, path: "/" },
+    { id: "devices", label: "Device Status", icon: Wifi, path: "/devices" },
+    { id: "ping", label: "Network Ping", icon: Activity, path: "/ping" },
+    { id: "door", label: "Smart Door", icon: DoorOpen, path: "/door" },
+    { id: "lamp", label: "Smart Lamp", icon: Lightbulb, path: "/lamp" },
+    { id: "gas", label: "Gas Detector", icon: Wind, path: "/gas" },
+    { id: "feeder", label: "Fish Feeder", icon: Fish, path: "/feeder" },
+    { id: "trash", label: "Smart Trash", icon: Trash2, path: "/trash" },
+    { id: "clothesline", label: "Jemuran", icon: CloudRain, path: "/clothesline" },
   ];
+
+  const handleNavigation = (path: string) => {
+    router.push(path);
+    setIsOpen(false);
+  };
+
+  const isActive = (path: string) => pathname === path;
 
   return (
     <>
@@ -36,9 +44,9 @@ export default function Sidebar({ activeSection, onSectionChange, isConnected }:
 
       {/* Sidebar */}
       <aside
-        className={`fixed top-0 left-0 h-full bg-gradient-to-b from-indigo-900 to-indigo-700 text-white transition-transform duration-300 z-40 ${
-          isOpen ? "translate-x-0" : "-translate-x-full"
-        } w-64 lg:translate-x-0`}
+        className={`fixed lg:relative top-0 left-0 h-full bg-gradient-to-b from-indigo-900 to-indigo-700 text-white transition-transform duration-300 z-40 ${
+          isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        } w-64 overflow-y-auto`}
       >
         <div className="p-6">
           <div className="flex items-center gap-3 mb-8">
@@ -59,14 +67,14 @@ export default function Sidebar({ activeSection, onSectionChange, isConnected }:
           <nav className="space-y-2">
             {menuItems.map((item) => {
               const Icon = item.icon;
-              const isActive = activeSection === item.id;
+              const itemIsActive = isActive(item.path);
               
               return (
                 <button
                   key={item.id}
-                  onClick={() => onSectionChange(item.id)}
+                  onClick={() => handleNavigation(item.path)}
                   className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${
-                    isActive
+                    itemIsActive
                       ? 'bg-white text-indigo-900 shadow-lg'
                       : 'hover:bg-indigo-800 text-white'
                   }`}
