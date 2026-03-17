@@ -88,6 +88,15 @@ export default function Sidebar({ isConnected }: Props) {
         </div>
 
         <div className="absolute bottom-0 left-0 right-0 p-6 border-t border-indigo-600">
+          <button
+            onClick={() => {
+              sessionStorage.removeItem('iot-dashboard-intro-seen');
+              window.location.reload();
+            }}
+            className="w-full mb-3 px-3 py-2 text-xs bg-indigo-800 hover:bg-indigo-700 text-white rounded-lg transition-colors"
+          >
+            Show Intro
+          </button>
           <div className="text-xs opacity-70">
             <p>IoT Dashboard v1.0</p>
             <p className="mt-1">ESP32 Monitoring System</p>
