@@ -2,11 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Wifi, WifiOff, Settings } from "lucide-react";
-
-interface Props {
-  subscribe: (topic: string, callback: (message: string) => void) => void;
-  publish: (topic: string, message: string) => void;
-}
+import { useMQTT } from "@/hooks/useMQTT";
 
 interface DeviceStatus {
   esp32_1: boolean;
@@ -24,6 +20,7 @@ interface DeviceStatus {
 }
 
 export default function DeviceStatusPage() {
+  const { publish, subscribe } = useMQTT();
   const [devices, setDevices] = useState<DeviceStatus>({
     esp32_1: false,
     esp32_2: false,
@@ -119,16 +116,7 @@ export default function DeviceStatusPage() {
       if (unsubscribeStatus4) unsubscribeStatus4();
       clearInterval(interval);
     };
-  }, []);
-
-  const subscribe = (topic: string, callback: (message: string) => void) => {
-    // Add your MQTT subscription logic here
-    return () => {};
-  };
-
-  const publish = (topic: string, message: string) => {
-    // Add your MQTT publish logic here
-  };
+  }, [subscribe, publish]);
 
   const sendWifiConfig = (deviceId: string) => {
     if (!wifiSSID || !wifiPassword) {
