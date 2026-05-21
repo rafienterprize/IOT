@@ -10,9 +10,28 @@ interface Props {
 
 export default function FishFeeder({ publish, subscribe }: Props) {
   const [isOpen, setIsOpen] = useState(false);
-  const [feedTimes, setFeedTimes] = useState<string[]>(["08:00", "18:00"]);
+  const [feedTimes, setFeedTimes] = useState<string[]>([]);
   const [newTime, setNewTime] = useState("");
   const [lastFeed, setLastFeed] = useState<string>("");
+
+  // Load feed times from localStorage on component mount
+  useEffect(() => {
+    const savedTimes = localStorage.getItem('fishFeederTimes');
+    if (savedTimes) {
+      try {
+        const times = JSON.parse(savedTimes);
+        setFeedTimes(times);
+      } catch (e) {
+        console.error('Failed to parse saved feed times:', e);
+        setFeedTimes([]);
+      }
+    }
+  }, []);
+
+  // Save feed times to localStorage whenever they change
+  useEffect(() => {
+    localStorage.setItem('fishFeederTimes', JSON.stringify(feedTimes));
+  }, [feedTimes]);
 
   useEffect(() => {
     const unsubscribe = subscribe("iot/feeder/status", (message) => {
@@ -44,6 +63,12 @@ export default function FishFeeder({ publish, subscribe }: Props) {
     publish("iot/feeder/schedule", JSON.stringify(updated));
   };
 
+  const clearAllTimes = () => {
+    setFeedTimes([]);
+    publish("iot/feeder/schedule", JSON.stringify([]));
+    localStorage.removeItem('fishFeederTimes');
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-lg p-6">
       <div className="flex items-center gap-3 mb-4">
@@ -70,23 +95,39 @@ export default function FishFeeder({ publish, subscribe }: Props) {
         )}
 
         <div className="border-t pt-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Clock className="w-5 h-5 text-gray-600" />
-            <span className="font-semibold text-gray-700">Jadwal Otomatis</span>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Clock className="w-5 h-5 text-gray-600" />
+              <span className="font-semibold text-gray-700">Jadwal Otomatis</span>
+            </div>
+            {feedTimes.length > 0 && (
+              <button
+                onClick={clearAllTimes}
+                className="text-red-500 hover:text-red-700 text-xs"
+              >
+                Hapus Semua
+              </button>
+            )}
           </div>
 
           <div className="space-y-2 mb-3">
-            {feedTimes.map((time) => (
-              <div key={time} className="flex items-center justify-between bg-gray-50 p-2 rounded">
-                <span className="text-gray-700">{time}</span>
-                <button
-                  onClick={() => removeFeedTime(time)}
-                  className="text-red-500 hover:text-red-700 text-sm"
-                >
-                  Hapus
-                </button>
+            {feedTimes.length === 0 ? (
+              <div className="text-gray-500 text-sm text-center py-2">
+                Belum ada jadwal otomatis
               </div>
-            ))}
+            ) : (
+              feedTimes.map((time) => (
+                <div key={time} className="flex items-center justify-between bg-gray-50 p-2 rounded">
+                  <span className="text-gray-700">{time}</span>
+                  <button
+                    onClick={() => removeFeedTime(time)}
+                    className="text-red-500 hover:text-red-700 text-sm"
+                  >
+                    Hapus
+                  </button>
+                </div>
+              ))
+            )}
           </div>
 
           <div className="flex gap-2">

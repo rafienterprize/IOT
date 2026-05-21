@@ -15,7 +15,7 @@
 HardwareSerial SerialToESP4(2); // Use Serial2
 
 // MQTT Broker
-const char* mqtt_server = "broker.emqx.io";
+const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 
 WiFiClient espClient;
@@ -42,11 +42,21 @@ PubSubClient client(espClient);
 
 // Pin definitions - CLOTHESLINE
 #define RAIN_SENSOR_PIN 35
-#define CLOTHESLINE_MOTOR_PIN1 14
-#define CLOTHESLINE_MOTOR_PIN2 15
+#define CLOTHESLINE_SERVO_PIN 4  // Ganti dari motor ke servo
+#define CLOTHESLINE_BUZZER_PIN 2 // Buzzer untuk alert hujan
 
 Servo rotationServo;
 Servo gateServo;
+Servo clotheslineServo;  // Tambah servo untuk jemuran
+
+// Forward declarations
+void rotateToPosition(int angle);
+void openClothesline();
+void closeClothesline();
+void processTrash();
+int readTrashLevel(int trigPin, int echoPin);
+bool checkRain();
+void rainAlert();
 
 // Variables - Trash System
 int currentRotation = 0; // 0=Organik, 120=Anorganik, 240=Metal
@@ -54,8 +64,9 @@ bool isProcessing = false;
 int itemCount[3] = {0, 0, 0}; // Organik, Anorganik, Metal
 
 // Variables - Clothesline
-bool clotheslineOpen = false;
+bool clotheslineOpen = true;  // true = 90° (buka), false = 0° (tutup)
 bool autoMode = true;
+bool isRaining = false;
 
 // Timing
 unsigned long lastTrashRead = 0;
@@ -67,11 +78,20 @@ const long heartbeatInterval = 10000;
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("========================================");
+  Serial.println("ESP32 #2 - Smart Trash & Clothesline");
+  Serial.println("========================================");
+  Serial.println("Initializing system...");
+  
   EEPROM.begin(EEPROM_SIZE);
+  Serial.println("✓ EEPROM initialized");
   
   // Initialize Serial with ESP32 #4
   SerialToESP4.begin(9600, SERIAL_8N1, RX_FROM_ESP4, TX_TO_ESP4); // RX=16, TX=17
+  Serial.println("✓ Serial communication with ESP32 #4 initialized");
   
+  Serial.println("Setting up trash system pins...");
   // Trash system pins
   pinMode(ULTRASONIC_TRIG_ORGANIK, OUTPUT);
   pinMode(ULTRASONIC_ECHO_ORGANIK, INPUT);
@@ -91,27 +111,42 @@ void setup() {
   // Set color sensor frequency
   digitalWrite(COLOR_SENSOR_S0, HIGH);
   digitalWrite(COLOR_SENSOR_S1, LOW);
+  Serial.println("✓ Trash system pins configured");
   
+  Serial.println("Initializing servos...");
   rotationServo.attach(SERVO_ROTATION_PIN);
   gateServo.attach(SERVO_GATE_PIN);
+  clotheslineServo.attach(CLOTHESLINE_SERVO_PIN);
+  
   rotationServo.write(0);
   gateServo.write(0); // Gate closed
+  clotheslineServo.write(90); // Jemuran buka (default)
+  Serial.println("✓ Servos initialized (Trash: 0°, Gate: 0°, Clothesline: 90°)");
   
+  Serial.println("Setting up clothesline system...");
   // Clothesline pins
   pinMode(RAIN_SENSOR_PIN, INPUT);
-  pinMode(CLOTHESLINE_MOTOR_PIN1, OUTPUT);
-  pinMode(CLOTHESLINE_MOTOR_PIN2, OUTPUT);
+  pinMode(CLOTHESLINE_BUZZER_PIN, OUTPUT);
+  digitalWrite(CLOTHESLINE_BUZZER_PIN, LOW);
+  Serial.println("✓ Clothesline system configured");
+  Serial.println("  - Rain sensor: GPIO 35 (analog)");
+  Serial.println("  - Servo: GPIO 4 (PWM)");
+  Serial.println("  - Buzzer: GPIO 2 (digital)");
   
-  digitalWrite(CLOTHESLINE_MOTOR_PIN1, LOW);
-  digitalWrite(CLOTHESLINE_MOTOR_PIN2, LOW);
-  
+  Serial.println("Connecting to WiFi...");
   // Try to connect to WiFi
   if (connectToWiFi()) {
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(callback);
+    Serial.println("✓ MQTT client configured");
   } else {
-    Serial.println("Waiting for WiFi config from Master ESP32...");
+    Serial.println("⚠️  Waiting for WiFi config from ESP32 #4...");
   }
+  
+  Serial.println("========================================");
+  Serial.println("🚀 ESP32 #2 Setup Complete!");
+  Serial.println("Ready for trash sorting and clothesline control");
+  Serial.println("========================================");
 }
 
 bool isWiFiConfigured() {
@@ -185,6 +220,37 @@ void sendLogToESP4(String log) {
 void receiveWiFiConfigFromESP4() {
   if (SerialToESP4.available()) {
     String data = SerialToESP4.readStringUntil('\n');
+    data.trim(); // Remove whitespace
+    
+    // Check for RESET_WIFI command
+    if (data == "RESET_WIFI") {
+      Serial.println("========================================");
+      Serial.println("RESET_WIFI command received!");
+      Serial.println("Disconnecting WiFi and clearing config...");
+      Serial.println("========================================");
+      
+      // Send offline status to ESP32 #4 before disconnecting
+      sendLogToESP4("WiFi:RESET");
+      delay(100);
+      
+      // Disconnect WiFi
+      WiFi.disconnect(true);
+      delay(100);
+      
+      // Clear EEPROM WiFi config
+      for (int i = 0; i < 200; i++) {
+        EEPROM.write(i, 0);
+      }
+      EEPROM.write(CONFIGURED_ADDR, 0); // Mark as not configured
+      EEPROM.commit();
+      
+      Serial.println("✓ WiFi config cleared!");
+      Serial.println("Waiting for new WiFi config from ESP32 #4...");
+      Serial.println("========================================");
+      
+      // Don't restart, just wait for new config
+      return;
+    }
     
     // Format: "WIFI:SSID:PASSWORD"
     if (data.startsWith("WIFI:")) {
@@ -232,24 +298,27 @@ void callback(char* topic, byte* payload, unsigned int length) {
     message += (char)payload[i];
   }
   
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("]: ");
-  Serial.println(message);
+  Serial.println("📨 MQTT Message Received:");
+  Serial.println("  Topic: " + String(topic));
+  Serial.println("  Message: " + message);
+  Serial.println("  Length: " + String(length) + " bytes");
   
   // Trash rotation control
   if (String(topic) == "iot/trash/rotate") {
     int rotation = message.toInt();
+    Serial.println("🗂️  Trash rotation command: " + String(rotation) + "°");
     rotateToPosition(rotation);
   }
   
   if (String(topic) == "iot/trash/reset") {
+    Serial.println("🔄 Trash system reset command");
     rotateToPosition(0);
     gateServo.write(0);
   }
   
   // Clothesline control
   if (String(topic) == "iot/clothesline/control") {
+    Serial.println("🏠 Clothesline manual control: " + message);
     if (message == "OPEN") {
       openClothesline();
     } else if (message == "CLOSE") {
@@ -259,27 +328,61 @@ void callback(char* topic, byte* payload, unsigned int length) {
   
   if (String(topic) == "iot/clothesline/auto") {
     autoMode = (message == "ON");
+    Serial.println("⚙️  Auto mode " + String(autoMode ? "ENABLED" : "DISABLED"));
   }
   
   if (String(topic) == "iot/esp32_2/wifi/config") {
-    Serial.println("WiFi config received: " + message);
+    Serial.println("📶 WiFi config received: " + message);
   }
   
   // Ping response
   if (String(topic) == "iot/esp32_2/ping") {
     if (message == "PING") {
-      client.publish("iot/esp32_2/pong", "PONG");
+      Serial.println("========================================");
+      Serial.println("🏓 PING REQUEST RECEIVED");
+      Serial.println("From topic: iot/esp32_2/ping");
+      Serial.println("Message: " + message);
+      Serial.println("Responding with PONG...");
+      
+      bool published = client.publish("iot/esp32_2/pong", "PONG");
+      if (published) {
+        Serial.println("✅ PONG sent successfully");
+        sendLogToESP4("Ping:OK");
+      } else {
+        Serial.println("❌ Failed to send PONG");
+        sendLogToESP4("Ping:FAIL");
+      }
+      Serial.println("========================================");
     }
   }
+  
+  Serial.println("✅ MQTT message processed");
 }
 
 void rotateToPosition(int angle) {
+  Serial.println("========================================");
+  Serial.println("🔄 TRASH ROTATION COMMAND");
+  Serial.println("Current position: " + String(currentRotation) + "°");
+  Serial.println("Target position: " + String(angle) + "°");
+  Serial.println("Rotating servo...");
+  
   currentRotation = angle;
   rotationServo.write(angle);
-  client.publish("iot/trash/rotation", String(angle).c_str());
-  Serial.print("Rotated to: ");
-  Serial.println(angle);
+  
+  // Wait for servo to reach position
   delay(1000);
+  
+  // Publish status
+  bool published = client.publish("iot/trash/rotation", String(angle).c_str());
+  if (published) {
+    Serial.println("✅ Rotation completed and status published");
+    sendLogToESP4("Rotated:" + String(angle));
+  } else {
+    Serial.println("❌ Failed to publish rotation status");
+  }
+  
+  Serial.println("Final position: " + String(angle) + "°");
+  Serial.println("========================================");
 }
 
 String detectTrashType() {
@@ -404,46 +507,86 @@ int readTrashLevel(int trigPin, int echoPin) {
 }
 
 void openClothesline() {
-  Serial.println("Opening clothesline...");
+  Serial.println("========================================");
+  Serial.println("📂 OPENING CLOTHESLINE");
+  Serial.println("Servo: 0° → 90° (OPEN position)");
+  Serial.println("========================================");
+  
   sendLogToESP4("Opening...");
   client.publish("iot/esp32_2/status", "Opening clothesline...");
-  digitalWrite(CLOTHESLINE_MOTOR_PIN1, HIGH);
-  digitalWrite(CLOTHESLINE_MOTOR_PIN2, LOW);
-  delay(2000);
-  digitalWrite(CLOTHESLINE_MOTOR_PIN1, LOW);
+  
+  clotheslineServo.write(90); // Buka jemuran (90 derajat)
   clotheslineOpen = true;
+  
   client.publish("iot/clothesline/status", "OPEN");
   client.publish("iot/esp32_2/status", "Clothesline: OPEN");
   sendLogToESP4("Clothesline:OPEN");
+  
+  Serial.println("✅ Clothesline opened successfully");
 }
 
 void closeClothesline() {
-  Serial.println("Closing clothesline...");
+  Serial.println("========================================");
+  Serial.println("📁 CLOSING CLOTHESLINE");
+  Serial.println("Servo: 90° → 0° (CLOSED position)");
+  Serial.println("========================================");
+  
   sendLogToESP4("Closing...");
   client.publish("iot/esp32_2/status", "Closing clothesline...");
-  digitalWrite(CLOTHESLINE_MOTOR_PIN1, LOW);
-  digitalWrite(CLOTHESLINE_MOTOR_PIN2, HIGH);
-  delay(2000);
-  digitalWrite(CLOTHESLINE_MOTOR_PIN2, LOW);
+  
+  clotheslineServo.write(0); // Tutup jemuran (0 derajat)
   clotheslineOpen = false;
-  client.publish("iot/clothesline/status", "CLOSE");
+  
+  client.publish("iot/clothesline/status", "CLOSED");
   client.publish("iot/esp32_2/status", "Clothesline: CLOSED");
-  sendLogToESP4("Clothesline:CLOSE");
+  sendLogToESP4("Clothesline:CLOSED");
+  
+  Serial.println("✅ Clothesline closed successfully");
 }
 
 bool checkRain() {
   int rainValue = analogRead(RAIN_SENSOR_PIN);
+  // Rain sensor: LOW value = water detected, HIGH value = dry
+  // Threshold: < 2000 = ada air (hujan), >= 2000 = kering
+  
+  // Debug rain sensor value
+  static unsigned long lastDebug = 0;
+  if (millis() - lastDebug > 5000) { // Debug every 5 seconds
+    Serial.println("🌧️  Rain Sensor Value: " + String(rainValue) + " (Threshold: 2000)");
+    lastDebug = millis();
+  }
+  
   return rainValue < 2000;
+}
+
+void rainAlert() {
+  // Buzzer alert pattern: 3 beeps
+  Serial.println("🔊 RAIN ALERT - Buzzer activated");
+  for (int i = 0; i < 3; i++) {
+    Serial.print("Beep " + String(i + 1) + "/3... ");
+    digitalWrite(CLOTHESLINE_BUZZER_PIN, HIGH);
+    delay(200);
+    digitalWrite(CLOTHESLINE_BUZZER_PIN, LOW);
+    delay(200);
+    Serial.println("Done");
+  }
+  Serial.println("🔊 Rain alert completed");
 }
 
 void reconnect() {
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    Serial.println("========================================");
+    Serial.println("🔌 MQTT CONNECTION ATTEMPT");
+    Serial.println("Broker: " + String(mqtt_server) + ":" + String(mqtt_port));
+    
     String clientId = "ESP32_2_";
     clientId += String(random(0xffff), HEX);
+    Serial.println("Client ID: " + clientId);
     
     if (client.connect(clientId.c_str())) {
-      Serial.println("connected");
+      Serial.println("✅ MQTT Connected successfully!");
+      Serial.println("Subscribing to topics...");
+      
       client.subscribe("iot/trash/rotate");
       client.subscribe("iot/trash/reset");
       client.subscribe("iot/clothesline/control");
@@ -451,11 +594,20 @@ void reconnect() {
       client.subscribe("iot/esp32_2/wifi/config");
       client.subscribe("iot/esp32_2/ping");
       
+      Serial.println("✅ All topics subscribed");
+      
+      // Send online status
       client.publish("iot/esp32_2/heartbeat", "ONLINE");
+      sendLogToESP4("MQTT:Connected");
+      
+      Serial.println("🚀 ESP32 #2 is now online and ready!");
+      Serial.println("========================================");
     } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
+      Serial.println("❌ MQTT Connection failed");
+      Serial.println("Error code: " + String(client.state()));
+      Serial.println("Retrying in 5 seconds...");
+      Serial.println("========================================");
+      sendLogToESP4("MQTT:Failed");
       delay(5000);
     }
   }
@@ -497,15 +649,58 @@ void loop() {
   // Check rain sensor
   if (currentMillis - lastRainRead >= rainInterval) {
     lastRainRead = currentMillis;
-    bool isRaining = checkRain();
+    bool currentRainStatus = checkRain();
     
-    if (isRaining) {
-      client.publish("iot/clothesline/rain", "RAIN");
-      if (autoMode && clotheslineOpen) {
-        closeClothesline();
+    // Only act if rain status changed
+    if (currentRainStatus != isRaining) {
+      isRaining = currentRainStatus;
+      
+      if (isRaining) {
+        Serial.println("========================================");
+        Serial.println("🌧️  RAIN DETECTED!");
+        Serial.println("Rain sensor value < 2000 (wet)");
+        Serial.println("Auto mode: " + String(autoMode ? "ON" : "OFF"));
+        Serial.println("Clothesline status: " + String(clotheslineOpen ? "OPEN" : "CLOSED"));
+        Serial.println("========================================");
+        
+        client.publish("iot/clothesline/rain", "RAIN");
+        sendLogToESP4("Rain detected");
+        
+        // Sound rain alert
+        rainAlert();
+        
+        if (autoMode && clotheslineOpen) {
+          Serial.println("🔄 Auto closing clothesline due to rain...");
+          closeClothesline(); // Servo dari 90° ke 0° (tutup)
+        } else if (!autoMode) {
+          Serial.println("⚠️  Auto mode disabled - Manual control required");
+          client.publish("iot/esp32_2/status", "Rain detected - Manual control required");
+        } else if (!clotheslineOpen) {
+          Serial.println("ℹ️  Clothesline already closed");
+          client.publish("iot/esp32_2/status", "Rain detected - Clothesline already closed");
+        }
+      } else {
+        Serial.println("========================================");
+        Serial.println("☀️  WEATHER CLEAR");
+        Serial.println("Rain sensor value >= 2000 (dry)");
+        Serial.println("Rain stopped - Safe to hang clothes");
+        Serial.println("========================================");
+        
+        client.publish("iot/clothesline/rain", "CLEAR");
+        sendLogToESP4("Weather clear");
+        
+        // Auto open when rain stops
+        if (autoMode && !clotheslineOpen) {
+          Serial.println("🔄 Auto opening clothesline - Weather clear");
+          openClothesline(); // Servo dari 0° ke 90° (buka)
+        } else if (!autoMode) {
+          Serial.println("⚠️  Auto mode disabled - Manual control required");
+          client.publish("iot/esp32_2/status", "Weather clear - Manual control required");
+        } else if (clotheslineOpen) {
+          Serial.println("ℹ️  Clothesline already open");
+          client.publish("iot/esp32_2/status", "Weather clear - Clothesline already open");
+        }
       }
-    } else {
-      client.publish("iot/clothesline/rain", "CLEAR");
     }
   }
   

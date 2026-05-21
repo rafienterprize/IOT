@@ -2,8 +2,8 @@
 #include <PubSubClient.h>
 #include <SPI.h>
 #include <MFRC522.h>
-#include <Keypad.h>
 #include <EEPROM.h>
+#include <ESP32Servo.h>
 
 // EEPROM addresses
 #define EEPROM_SIZE 512
@@ -12,12 +12,12 @@
 #define CONFIGURED_ADDR 200
 
 // Serial communication with ESP32 #4
-#define RX_FROM_ESP4 16  // Receive WiFi config from ESP32 #4
-#define TX_TO_ESP4 17    // Send logs to ESP32 #4
-HardwareSerial SerialToESP4(2); // Use Serial2
+#define RX_FROM_ESP4 16
+#define TX_TO_ESP4 17
+HardwareSerial SerialToESP4(2);
 
 // MQTT Broker
-const char* mqtt_server = "broker.emqx.io";
+const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 
 WiFiClient espClient;
@@ -29,34 +29,34 @@ PubSubClient client(espClient);
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 
-// Door Lock Pin
-#define LOCK_PIN 13
-#define BUZZER_PIN 14
+// Door Lock Pins (IR sensor only)
+#define DOOR_SERVO_PIN 13
+#define DOOR_IR_SENSOR_PIN 14
+#define BUZZER_PIN 15
 
-// Keypad 4x4
-const byte ROWS = 4;
-const byte COLS = 4;
-char keys[ROWS][COLS] = {
-  {'1','2','3','A'},
-  {'4','5','6','B'},
-  {'7','8','9','C'},
-  {'*','0','#','D'}
-};
-byte rowPins[ROWS] = {32, 33, 25, 26};
-byte colPins[COLS] = {27, 14, 12, 13};
-Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+Servo doorServo;
+
+// Smart Gate Pins
+#define GATE_SERVO_LEFT_PIN 25
+#define GATE_SERVO_RIGHT_PIN 26
+#define GATE_IR_SENSOR_PIN 32  // Infrared sensor untuk deteksi mobil (pindah dari 27)
+
+Servo gateServoLeft;
+Servo gateServoRight;
 
 // Variables
 bool isDoorLocked = true;
+bool isGateOpen = false;
 String registeredCards[10];
 int cardCount = 0;
-String registeredPins[10];
-int pinCount = 0;
-String enteredPin = "";
 bool isScanMode = false;
 
 unsigned long lastHeartbeat = 0;
 const long heartbeatInterval = 10000;
+unsigned long lastGateCheck = 0;
+const long gateCheckInterval = 500;
+unsigned long lastDoorCheck = 0;
+const long doorCheckInterval = 500;
 
 bool isWiFiConfigured() {
   byte configured = EEPROM.read(CONFIGURED_ADDR);
@@ -126,6 +126,37 @@ void sendLogToESP4(String log) {
 void receiveWiFiConfigFromESP4() {
   if (SerialToESP4.available()) {
     String data = SerialToESP4.readStringUntil('\n');
+    data.trim(); // Remove whitespace
+    
+    // Check for RESET_WIFI command
+    if (data == "RESET_WIFI") {
+      Serial.println("========================================");
+      Serial.println("RESET_WIFI command received!");
+      Serial.println("Disconnecting WiFi and clearing config...");
+      Serial.println("========================================");
+      
+      // Send offline status to ESP32 #4 before disconnecting
+      sendLogToESP4("WiFi:RESET");
+      delay(100);
+      
+      // Disconnect WiFi
+      WiFi.disconnect(true);
+      delay(100);
+      
+      // Clear EEPROM WiFi config
+      for (int i = 0; i < 200; i++) {
+        EEPROM.write(i, 0);
+      }
+      EEPROM.write(CONFIGURED_ADDR, 0); // Mark as not configured
+      EEPROM.commit();
+      
+      Serial.println("✓ WiFi config cleared!");
+      Serial.println("Waiting for new WiFi config from ESP32 #4...");
+      Serial.println("========================================");
+      
+      // Don't restart, just wait for new config
+      return;
+    }
     
     // Format: "WIFI:SSID:PASSWORD"
     if (data.startsWith("WIFI:")) {
@@ -169,27 +200,52 @@ void receiveWiFiConfigFromESP4() {
 
 void setup() {
   Serial.begin(115200);
+  delay(1000);
+  Serial.println("========================================");
+  Serial.println("ESP32 #3 - Smart Door (IR) & Gate (RFID+IR)");
+  Serial.println("========================================");
+  
   EEPROM.begin(EEPROM_SIZE);
+  Serial.println("✓ EEPROM initialized");
   
-  // Initialize Serial with ESP32 #4
-  SerialToESP4.begin(9600, SERIAL_8N1, RX_FROM_ESP4, TX_TO_ESP4); // RX=16, TX=17
+  SerialToESP4.begin(9600, SERIAL_8N1, RX_FROM_ESP4, TX_TO_ESP4);
+  Serial.println("✓ Serial to ESP32 #4 initialized");
   
-  // Initialize SPI and RFID
+  Serial.println("Initializing SPI and RFID...");
   SPI.begin();
   mfrc522.PCD_Init();
+  Serial.println("✓ RFID initialized");
   
-  // Initialize pins
-  pinMode(LOCK_PIN, OUTPUT);
+  Serial.println("Initializing door IR sensor and servo...");
+  pinMode(DOOR_IR_SENSOR_PIN, INPUT);
+  doorServo.attach(DOOR_SERVO_PIN);
+  doorServo.write(0); // Locked position
   pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(LOCK_PIN, HIGH); // Locked
+  Serial.println("✓ Door IR sensor and servo initialized");
   
-  // Try to connect to WiFi
+  Serial.println("Initializing gate IR sensor and servos...");
+  pinMode(GATE_IR_SENSOR_PIN, INPUT);
+  gateServoLeft.attach(GATE_SERVO_LEFT_PIN);
+  gateServoRight.attach(GATE_SERVO_RIGHT_PIN);
+  Serial.println("✓ Gate IR sensor and servos initialized");
+  
+  Serial.println("Closing gate...");
+  closeGate();
+  Serial.println("✓ Gate closed");
+  
+  Serial.println("Connecting to WiFi...");
   if (connectToWiFi()) {
+    Serial.println("✓ WiFi connected in setup");
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(callback);
+    Serial.println("✓ MQTT client configured in setup");
   } else {
-    Serial.println("Waiting for WiFi config from ESP32 #4...");
+    Serial.println("⚠ WiFi not connected, waiting for config from ESP32 #4...");
   }
+  
+  Serial.println("========================================");
+  Serial.println("Setup complete! Ready for IR detection...");
+  Serial.println("========================================");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -218,8 +274,24 @@ void callback(char* topic, byte* payload, unsigned int length) {
     beep(3);
   }
   
-  // RFID registration
-  if (String(topic) == "iot/door/rfid/register") {
+  // Ping response
+  if (String(topic) == "iot/esp32_3/ping") {
+    if (message == "PING") {
+      client.publish("iot/esp32_3/pong", "PONG");
+    }
+  }
+  
+  // Smart Gate Control
+  if (String(topic) == "iot/gate/control") {
+    if (message == "OPEN") {
+      openGate();
+    } else if (message == "CLOSE") {
+      closeGate();
+    }
+  }
+  
+  // Gate RFID registration
+  if (String(topic) == "iot/gate/rfid/register") {
     int uidStart = message.indexOf("\"uid\":\"") + 7;
     int uidEnd = message.indexOf("\"", uidStart);
     String uid = message.substring(uidStart, uidEnd);
@@ -231,58 +303,28 @@ void callback(char* topic, byte* payload, unsigned int length) {
     registerCardWithUID(uid, name);
   }
   
-  // Scan mode control
-  if (String(topic) == "iot/door/rfid/scanmode") {
+  // Gate RFID scan mode control
+  if (String(topic) == "iot/gate/rfid/scanmode") {
     if (message == "START") {
       isScanMode = true;
-      Serial.println("Scan mode activated");
+      Serial.println("Gate scan mode activated");
     } else if (message == "STOP") {
       isScanMode = false;
-      Serial.println("Scan mode deactivated");
+      Serial.println("Gate scan mode deactivated");
     }
   }
   
-  // RFID delete
-  if (String(topic) == "iot/door/rfid/delete") {
+  // Gate RFID delete
+  if (String(topic) == "iot/gate/rfid/delete") {
     deleteCard(message);
   }
-  
-  // PIN registration
-  if (String(topic) == "iot/door/pin/register") {
-    int pinStart = message.indexOf("\"pin\":\"") + 7;
-    int pinEnd = message.indexOf("\"", pinStart);
-    String pin = message.substring(pinStart, pinEnd);
-    registerPin(pin);
-  }
-  
-  // PIN delete
-  if (String(topic) == "iot/door/pin/delete") {
-    deletePin(message);
-  }
-  
-  // Ping response
-  if (String(topic) == "iot/esp32_3/ping") {
-    if (message == "PING") {
-      client.publish("iot/esp32_3/pong", "PONG");
-    }
-  }
-}
-
-void lockDoor() {
-  isDoorLocked = true;
-  digitalWrite(LOCK_PIN, HIGH);
-  Serial.println("Door LOCKED");
-  beep(1);
-  sendLogToESP4("Door:LOCKED");
-  client.publish("iot/door/status", "LOCKED");
-  client.publish("iot/esp32_3/status", "Door: LOCKED");
 }
 
 void unlockDoor() {
   isDoorLocked = false;
-  digitalWrite(LOCK_PIN, LOW);
-  Serial.println("Door UNLOCKED - Welcome!");
-  beep(2);
+  doorServo.write(90); // Open position
+  Serial.println("Door UNLOCKED");
+  beep(1); // 1 beep for success
   sendLogToESP4("Door:UNLOCKED");
   client.publish("iot/door/status", "UNLOCKED");
   client.publish("iot/esp32_3/status", "Door: UNLOCKED");
@@ -290,6 +332,15 @@ void unlockDoor() {
   // Auto lock after 5 seconds
   delay(5000);
   lockDoor();
+}
+
+void lockDoor() {
+  isDoorLocked = true;
+  doorServo.write(0); // Locked position
+  Serial.println("Door LOCKED");
+  sendLogToESP4("Door:LOCKED");
+  client.publish("iot/door/status", "LOCKED");
+  client.publish("iot/esp32_3/status", "Door: LOCKED");
 }
 
 void beep(int times) {
@@ -327,7 +378,7 @@ void registerCardWithUID(String uid, String name) {
     Serial.println("Card registered: " + uid + " - " + name);
     
     String data = "{\"uid\":\"" + uid + "\",\"name\":\"" + name + "\",\"addedAt\":\"" + String(millis()) + "\"}";
-    client.publish("iot/door/rfid/registered", data.c_str());
+    client.publish("iot/gate/rfid/registered", data.c_str());
     client.publish("iot/esp32_3/status", "Card registered");
     
     beep(2);
@@ -347,42 +398,85 @@ void deleteCard(String uid) {
   }
 }
 
-void registerPin(String pin) {
-  if (pinCount < 10) {
-    registeredPins[pinCount] = pin;
-    pinCount++;
-    Serial.println("PIN registered: " + pin);
-  }
-}
-
-void deletePin(String pin) {
-  for (int i = 0; i < pinCount; i++) {
-    if (registeredPins[i] == pin) {
-      for (int j = i; j < pinCount - 1; j++) {
-        registeredPins[j] = registeredPins[j + 1];
-      }
-      pinCount--;
-      break;
-    }
-  }
-}
-
-bool isPinRegistered(String pin) {
-  for (int i = 0; i < pinCount; i++) {
-    if (registeredPins[i] == pin) {
-      return true;
-    }
-  }
-  return false;
-}
-
 void logAccess(String method, String status, String identifier) {
   String log = "{\"time\":\"" + String(millis()) + "\",\"method\":\"" + method + "\",\"status\":\"" + status + "\",\"identifier\":\"" + identifier + "\"}";
   client.publish("iot/door/access/log", log.c_str());
 }
 
+// Smart Door Functions (IR sensor only)
+void checkDoorSensor() {
+  int irValue = digitalRead(DOOR_IR_SENSOR_PIN);
+  
+  // IR sensor: LOW = person detected, HIGH = no person
+  if (irValue == LOW && isDoorLocked) {
+    Serial.println("Person detected - Opening door");
+    unlockDoor(); // Auto unlock when person detected
+  }
+}
+
+// Smart Gate Functions
+void checkGateSensor() {
+  int irValue = digitalRead(GATE_IR_SENSOR_PIN);
+  
+  // IR sensor: LOW = car detected from inside (EXIT), HIGH = no car
+  if (irValue == LOW && !isGateOpen) {
+    Serial.println("Car detected from inside - Opening gate for EXIT");
+    sendLogToESP4("Car exiting");
+    client.publish("iot/gate/status", "CAR_EXITING");
+    client.publish("iot/esp32_3/status", "Car exiting");
+    
+    // Open gate immediately for exit (no RFID needed)
+    openGate();
+  }
+}
+
+void openGate() {
+  if (isGateOpen) return;
+  
+  Serial.println("Opening gate...");
+  sendLogToESP4("Gate opening");
+  client.publish("iot/esp32_3/status", "Gate opening");
+  
+  // Open both servos
+  gateServoLeft.write(90);   // Left servo: 0° to 90°
+  gateServoRight.write(0);   // Right servo: 90° to 0° (reverse direction)
+  
+  isGateOpen = true;
+  beep(2);
+  
+  client.publish("iot/gate/status", "OPEN");
+  sendLogToESP4("Gate: OPEN");
+  
+  Serial.println("Gate opened!");
+  
+  // Auto close after 5 seconds
+  delay(5000);
+  closeGate();
+}
+
+void closeGate() {
+  if (!isGateOpen && gateServoLeft.read() == 0) return; // Already closed
+  
+  Serial.println("Closing gate...");
+  sendLogToESP4("Gate closing");
+  client.publish("iot/esp32_3/status", "Gate closing");
+  
+  // Close both servos
+  gateServoLeft.write(0);    // Left servo: back to 0°
+  gateServoRight.write(90);  // Right servo: back to 90°
+  
+  isGateOpen = false;
+  beep(1);
+  
+  client.publish("iot/gate/status", "CLOSED");
+  sendLogToESP4("Gate: CLOSED");
+  
+  Serial.println("Gate closed!");
+}
+
 void reconnect() {
-  while (!client.connected()) {
+  // Only try to reconnect, don't block forever
+  if (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
     String clientId = "ESP32_3_";
     clientId += String(random(0xffff), HEX);
@@ -391,19 +485,20 @@ void reconnect() {
       Serial.println("connected");
       client.subscribe("iot/door/control");
       client.subscribe("iot/door/emergency");
-      client.subscribe("iot/door/rfid/register");
-      client.subscribe("iot/door/rfid/scanmode");
-      client.subscribe("iot/door/rfid/delete");
-      client.subscribe("iot/door/pin/register");
-      client.subscribe("iot/door/pin/delete");
       client.subscribe("iot/esp32_3/ping");
       
+      // Subscribe to gate topics
+      client.subscribe("iot/gate/control");
+      client.subscribe("iot/gate/rfid/register");
+      client.subscribe("iot/gate/rfid/scanmode");
+      client.subscribe("iot/gate/rfid/delete");
+      
       client.publish("iot/esp32_3/heartbeat", "ONLINE");
+      Serial.println("✓ MQTT Connected & Heartbeat sent!");
     } else {
       Serial.print("failed, rc=");
       Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      delay(5000);
+      Serial.println(" - will retry in next loop");
     }
   }
 }
@@ -418,6 +513,16 @@ void loop() {
     return;
   }
   
+  // Setup MQTT if not configured yet (after WiFi connects)
+  static bool mqttConfigured = false;
+  if (!mqttConfigured && WiFi.status() == WL_CONNECTED) {
+    Serial.println("Setting up MQTT client...");
+    client.setServer(mqtt_server, mqtt_port);
+    client.setCallback(callback);
+    mqttConfigured = true;
+    Serial.println("✓ MQTT client configured!");
+  }
+  
   if (!client.connected()) {
     reconnect();
   }
@@ -425,75 +530,56 @@ void loop() {
   
   unsigned long currentMillis = millis();
   
-  // Check for RFID card
+  // Check door sensor (IR only)
+  if (currentMillis - lastDoorCheck >= doorCheckInterval) {
+    lastDoorCheck = currentMillis;
+    checkDoorSensor();
+  }
+  
+  // Check gate sensor
+  if (currentMillis - lastGateCheck >= gateCheckInterval) {
+    lastGateCheck = currentMillis;
+    checkGateSensor();
+  }
+  
+  // Check for RFID card (Gate ENTRY only)
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
     String uid = getCardUID();
     Serial.println("Card detected: " + uid);
     
+    // RFID for gate entry
+    if (isCardRegistered(uid)) {
+      Serial.println("Access Granted - Opening Gate for ENTRY");
+      sendLogToESP4("Gate entry OK");
+      client.publish("iot/esp32_3/status", "Gate entry granted");
+      
+      String data = "{\"uid\":\"" + uid + "\",\"status\":\"GATE_ENTRY_GRANTED\"}";
+      client.publish("iot/gate/access/log", data.c_str());
+      
+      openGate();
+    } else {
+      Serial.println("Access Denied - Unknown Card");
+      sendLogToESP4("Gate entry denied");
+      client.publish("iot/esp32_3/status", "Gate entry denied");
+      beep(3); // 3 beeps for denied
+      
+      String data = "{\"uid\":\"" + uid + "\",\"status\":\"GATE_ENTRY_DENIED\"}";
+      client.publish("iot/gate/access/log", data.c_str());
+    }
+    
+    // If in scan mode (registering new card for gate)
     if (isScanMode) {
-      Serial.println("Card scanned in scan mode: " + uid);
+      Serial.println("Card scanned: " + uid);
       sendLogToESP4("Scanning...");
       
       String data = "{\"uid\":\"" + uid + "\",\"status\":\"SCANNED\"}";
-      client.publish("iot/door/rfid/scan", data.c_str());
+      client.publish("iot/gate/rfid/scan", data.c_str());
       client.publish("iot/esp32_3/status", "Scanning card...");
       
       beep(1);
-    } else {
-      if (isCardRegistered(uid)) {
-        Serial.println("Access Granted!");
-        sendLogToESP4("Access Granted");
-        client.publish("iot/esp32_3/status", "Access Granted");
-        unlockDoor();
-        logAccess("RFID", "GRANTED", uid);
-        
-        String data = "{\"uid\":\"" + uid + "\",\"status\":\"ACCESS_GRANTED\"}";
-        client.publish("iot/door/rfid/scan", data.c_str());
-      } else {
-        Serial.println("Access Denied - Unknown Card");
-        sendLogToESP4("Access Denied");
-        client.publish("iot/esp32_3/status", "Access Denied");
-        beep(3);
-        logAccess("RFID", "DENIED", uid);
-        delay(2000);
-        client.publish("iot/esp32_3/status", "Door: LOCKED");
-      }
     }
     
     mfrc522.PICC_HaltA();
-  }
-  
-  // Check for keypad input
-  char key = keypad.getKey();
-  if (key) {
-    Serial.println("Key pressed: " + String(key));
-    
-    if (key == '#') {
-      if (enteredPin.length() == 4) {
-        if (isPinRegistered(enteredPin)) {
-          Serial.println("PIN Correct");
-          unlockDoor();
-          logAccess("PIN", "GRANTED", enteredPin);
-          
-          String data = "{\"pin\":\"" + enteredPin + "\",\"status\":\"ACCESS_GRANTED\"}";
-          client.publish("iot/door/pin/entry", data.c_str());
-        } else {
-          Serial.println("Wrong PIN");
-          beep(3);
-          logAccess("PIN", "DENIED", enteredPin);
-          delay(2000);
-        }
-      }
-      enteredPin = "";
-    } else if (key == '*') {
-      enteredPin = "";
-      Serial.println("PIN Cleared");
-    } else if (key >= '0' && key <= '9') {
-      if (enteredPin.length() < 4) {
-        enteredPin += key;
-        Serial.println("PIN: " + String(enteredPin.length()) + " digits entered");
-      }
-    }
   }
   
   // Send heartbeat and status

@@ -51,7 +51,7 @@ export default function IntroAnimation({ onComplete }: Props) {
           
           return (
             <div
-              key={i}
+              key={`particle-${i}-${size}-${duration}`}
               className="absolute bg-white rounded-full animate-float"
               style={{
                 width: `${size}px`,

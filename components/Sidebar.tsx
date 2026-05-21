@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Lightbulb, Wind, Fish, Trash2, CloudRain, Menu, X, Home, Wifi, DoorOpen, Activity } from "lucide-react";
+import { Lightbulb, Wind, Fish, Trash2, CloudRain, Menu, X, Home, Wifi, DoorOpen, Activity, Car } from "lucide-react";
 
 interface Props {
   activeSection: string;
@@ -17,6 +17,7 @@ export default function Sidebar({ activeSection, onSectionChange, isConnected }:
     { id: "devices", label: "Device Status", icon: Wifi },
     { id: "ping", label: "Network Ping", icon: Activity },
     { id: "door", label: "Smart Door", icon: DoorOpen },
+    { id: "gate", label: "Smart Gate", icon: Car },
     { id: "lamp", label: "Smart Lamp", icon: Lightbulb },
     { id: "gas", label: "Gas Detector", icon: Wind },
     { id: "feeder", label: "Fish Feeder", icon: Fish },

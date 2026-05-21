@@ -9,25 +9,22 @@
 #define PASS_ADDR 100
 #define CONFIGURED_ADDR 200
 
-// Serial communication from ESP32 #3 (Master)
-#define RX_FROM_MASTER 16  // Receive WiFi config from ESP32 #3
-HardwareSerial SerialFromMaster(2); // Use Serial2
+// Serial communication with ESP32 #4
+#define RX_FROM_ESP4 16  // Receive WiFi config from ESP32 #4
+#define TX_TO_ESP4 17    // Send logs to ESP32 #4
+HardwareSerial SerialToESP4(2); // Use Serial2
 
 // MQTT Broker
-const char* mqtt_server = "broker.emqx.io";
+const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Serial communication from ESP32 #3 (Master)
-#define RX_FROM_MASTER 16  // Receive WiFi config from ESP32 #3
-HardwareSerial SerialFromMaster(2); // Use Serial2
-
 // Pin definitions
-#define LAMP_PIN 2
-#define GAS_SENSOR_PIN 34
-#define SERVO_PIN 18
+#define LAMP_PIN 23          // Relay untuk lampu (ganti dari GPIO 2)
+#define GAS_SENSOR_PIN 34    // Sensor gas (analog input)
+#define SERVO_PIN 18         // Servo fish feeder
 
 Servo feederServo;
 
@@ -44,8 +41,8 @@ void setup() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_SIZE);
   
-  // Initialize Serial from Master (ESP32 #3)
-  SerialFromMaster.begin(9600, SERIAL_8N1, RX_FROM_MASTER, -1); // RX=16, TX not used
+  // Initialize Serial with ESP32 #4
+  SerialToESP4.begin(9600, SERIAL_8N1, RX_FROM_ESP4, TX_TO_ESP4); // RX=16, TX=17
   
   pinMode(LAMP_PIN, OUTPUT);
   digitalWrite(LAMP_PIN, LOW);
@@ -58,8 +55,13 @@ void setup() {
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(callback);
   } else {
-    Serial.println("Waiting for WiFi config from Master ESP32...");
+    Serial.println("Waiting for WiFi config from ESP32 #4...");
   }
+}
+
+bool isWiFiConfigured() {
+  byte configured = EEPROM.read(CONFIGURED_ADDR);
+  return (configured == 1);
 }
 
 bool connectToWiFi() {
@@ -121,107 +123,83 @@ bool connectToWiFi() {
   return false;
 }
 
-bool isWiFiConfigured() {
-  byte configured = EEPROM.read(CONFIGURED_ADDR);
-  return (configured == 1);
+void sendLogToESP4(String log) {
+  SerialToESP4.println("ESP1:" + log);
 }
 
-void startConfigMode() {
-  isConfigMode = true;
-  Serial.println("Starting Config Mode...");
-  
-  // Start Access Point
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(ap_ssid, ap_password);
-  
-  Serial.print("AP IP address: ");
-  Serial.println(WiFi.softAPIP());
-  
-  // Start DNS server for captive portal
-  dnsServer.start(53, "*", WiFi.softAPIP());
-  
-  // Setup web server routes
-  server.on("/", handleRoot);
-  server.on("/save", handleSave);
-  server.onNotFound(handleRoot);  // Redirect all to root
-  
-  server.begin();
-  Serial.println("Config web server started");
-  Serial.println("Connect to WiFi: ESP32-1-Setup");
-  Serial.println("Password: 12345678");
-}
-
-void handleRoot() {
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<style>";
-  html += "body{font-family:Arial;margin:0;padding:20px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh}";
-  html += ".container{max-width:400px;margin:0 auto;background:white;padding:30px;border-radius:15px;box-shadow:0 10px 40px rgba(0,0,0,0.2)}";
-  html += "h1{color:#333;text-align:center;margin-bottom:10px;font-size:24px}";
-  html += ".subtitle{text-align:center;color:#666;margin-bottom:30px;font-size:14px}";
-  html += "input{width:100%;padding:12px;margin:10px 0;border:2px solid #ddd;border-radius:8px;box-sizing:border-box;font-size:14px}";
-  html += "input:focus{outline:none;border-color:#667eea}";
-  html += "button{width:100%;padding:15px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;border:none;border-radius:8px;cursor:pointer;font-size:16px;font-weight:bold}";
-  html += "button:hover{opacity:0.9}";
-  html += ".info{background:#e3f2fd;padding:15px;border-radius:8px;margin-bottom:20px;font-size:13px;border-left:4px solid #2196F3}";
-  html += ".icon{font-size:48px;text-align:center;margin-bottom:10px}";
-  html += "</style></head><body>";
-  html += "<div class='container'>";
-  html += "<div class='icon'>🏠</div>";
-  html += "<h1>ESP32 WiFi Setup</h1>";
-  html += "<div class='subtitle'>ESP32 #1 - Lamp, Gas, Feeder</div>";
-  html += "<div class='info'>📡 Connect ESP32 to your WiFi network</div>";
-  html += "<form action='/save' method='POST'>";
-  html += "<input type='text' name='ssid' placeholder='WiFi SSID' required>";
-  html += "<input type='password' name='password' placeholder='WiFi Password' required>";
-  html += "<button type='submit'>💾 Save & Connect</button>";
-  html += "</form></div></body></html>";
-  
-  server.send(200, "text/html", html);
-}
-
-void handleSave() {
-  String ssid = server.arg("ssid");
-  String password = server.arg("password");
-  
-  Serial.println("Saving WiFi credentials...");
-  Serial.println("SSID: " + ssid);
-  
-  // Save to EEPROM
-  for (int i = 0; i < ssid.length(); i++) {
-    EEPROM.write(SSID_ADDR + i, ssid[i]);
+void receiveWiFiConfigFromESP4() {
+  if (SerialToESP4.available()) {
+    String data = SerialToESP4.readStringUntil('\n');
+    data.trim(); // Remove whitespace
+    
+    // Check for RESET_WIFI command
+    if (data == "RESET_WIFI") {
+      Serial.println("========================================");
+      Serial.println("RESET_WIFI command received!");
+      Serial.println("Disconnecting WiFi and clearing config...");
+      Serial.println("========================================");
+      
+      // Send offline status to ESP32 #4 before disconnecting
+      sendLogToESP4("WiFi:RESET");
+      delay(100);
+      
+      // Disconnect WiFi
+      WiFi.disconnect(true);
+      delay(100);
+      
+      // Clear EEPROM WiFi config
+      for (int i = 0; i < 200; i++) {
+        EEPROM.write(i, 0);
+      }
+      EEPROM.write(CONFIGURED_ADDR, 0); // Mark as not configured
+      EEPROM.commit();
+      
+      Serial.println("✓ WiFi config cleared!");
+      Serial.println("Waiting for new WiFi config from ESP32 #4...");
+      Serial.println("========================================");
+      
+      // Don't restart, just wait for new config
+      return;
+    }
+    
+    // Format: "WIFI:SSID:PASSWORD"
+    if (data.startsWith("WIFI:")) {
+      data = data.substring(5); // Remove "WIFI:" prefix
+      
+      int separatorIndex = data.indexOf(':');
+      if (separatorIndex > 0) {
+        String ssid = data.substring(0, separatorIndex);
+        String password = data.substring(separatorIndex + 1);
+        
+        Serial.println("========================================");
+        Serial.println("WiFi Config Received from ESP32 #4!");
+        Serial.println("========================================");
+        Serial.println("SSID: " + ssid);
+        Serial.println("Saving to EEPROM...");
+        
+        // Save to EEPROM
+        for (int i = 0; i < ssid.length(); i++) {
+          EEPROM.write(SSID_ADDR + i, ssid[i]);
+        }
+        EEPROM.write(SSID_ADDR + ssid.length(), '\0');
+        
+        for (int i = 0; i < password.length(); i++) {
+          EEPROM.write(PASS_ADDR + i, password[i]);
+        }
+        EEPROM.write(PASS_ADDR + password.length(), '\0');
+        
+        EEPROM.write(CONFIGURED_ADDR, 1);
+        EEPROM.commit(); 
+        
+        Serial.println("✓ WiFi credentials saved!");
+        Serial.println("Restarting ESP32 in 3 seconds...");
+        Serial.println("========================================");
+        
+        delay(3000);
+        ESP.restart();
+      }
+    }
   }
-  EEPROM.write(SSID_ADDR + ssid.length(), '\0');
-  
-  for (int i = 0; i < password.length(); i++) {
-    EEPROM.write(PASS_ADDR + i, password[i]);
-  }
-  EEPROM.write(PASS_ADDR + password.length(), '\0');
-  
-  EEPROM.write(CONFIGURED_ADDR, 1);
-  EEPROM.commit();
-  
-  String html = "<!DOCTYPE html><html><head>";
-  html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "<meta http-equiv='refresh' content='3;url=/'>";
-  html += "<style>body{font-family:Arial;text-align:center;padding:50px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;margin:0}";
-  html += ".success{background:white;padding:40px;border-radius:15px;max-width:400px;margin:0 auto;box-shadow:0 10px 40px rgba(0,0,0,0.2)}";
-  html += ".icon{font-size:64px;margin-bottom:20px}";
-  html += "h1{color:#4CAF50;margin:10px 0}";
-  html += "p{color:#666;font-size:14px}</style></head><body>";
-  html += "<div class='success'><div class='icon'>✓</div><h1>Saved Successfully!</h1>";
-  html += "<p>ESP32 is restarting and connecting to WiFi...</p>";
-  html += "<p style='font-size:12px;color:#999'>This page will close automatically</p></div></body></html>";
-  
-  server.send(200, "text/html", html);
-  
-  delay(2000);
-  ESP.restart();
-}
-
-void setup_wifi() {
-  // This function is now replaced by connectToWiFi()
-  // Kept for compatibility
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -355,54 +333,6 @@ void reconnect() {
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
       delay(5000);
-    }
-  }
-}
-
-void sendLogToESP4(String log) {
-  SerialToESP4.println("ESP1:" + log);
-}
-
-void receiveWiFiConfigFromESP4() {
-  if (SerialToESP4.available()) {
-    String data = SerialToESP4.readStringUntil('\n');
-    
-    // Format: "WIFI:SSID:PASSWORD"
-    if (data.startsWith("WIFI:")) {
-      data = data.substring(5); // Remove "WIFI:" prefix
-      
-      int separatorIndex = data.indexOf(':');
-      if (separatorIndex > 0) {
-        String ssid = data.substring(0, separatorIndex);
-        String password = data.substring(separatorIndex + 1);
-        
-        Serial.println("========================================");
-        Serial.println("WiFi Config Received from ESP32 #4!");
-        Serial.println("========================================");
-        Serial.println("SSID: " + ssid);
-        Serial.println("Saving to EEPROM...");
-        
-        // Save to EEPROM
-        for (int i = 0; i < ssid.length(); i++) {
-          EEPROM.write(SSID_ADDR + i, ssid[i]);
-        }
-        EEPROM.write(SSID_ADDR + ssid.length(), '\0');
-        
-        for (int i = 0; i < password.length(); i++) {
-          EEPROM.write(PASS_ADDR + i, password[i]);
-        }
-        EEPROM.write(PASS_ADDR + password.length(), '\0');
-        
-        EEPROM.write(CONFIGURED_ADDR, 1);
-        EEPROM.commit();
-        
-        Serial.println("✓ WiFi credentials saved!");
-        Serial.println("Restarting ESP32 in 3 seconds...");
-        Serial.println("========================================");
-        
-        delay(3000);
-        ESP.restart();
-      }
     }
   }
 }

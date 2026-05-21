@@ -1,7 +1,5 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
 #include <WebServer.h>
 #include <EEPROM.h>
 #include <DNSServer.h>
@@ -34,7 +32,7 @@ HardwareSerial SerialFromESP2(2); // Serial2 RX for logs
 // Note: We'll use Software Serial or polling for ESP32 #3 logs
 
 // MQTT Broker
-const char* mqtt_server = "broker.emqx.io";
+const char* mqtt_server = "broker.hivemq.com";
 const int mqtt_port = 1883;
 
 WiFiClient espClient;
@@ -42,30 +40,109 @@ PubSubClient client(espClient);
 WebServer server(80);
 DNSServer dnsServer;
 
-// LCD I2C (Address 0x27, 16x2)
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+// LED Status Indicators (4 LEDs + 1 Buzzer)
+#define LED_ESP1_PIN 21     // LED untuk status ESP32 #1 (Blue)
+#define LED_ESP2_PIN 22     // LED untuk status ESP32 #2 (Green) 
+#define LED_ESP3_PIN 23     // LED untuk status ESP32 #3 (Red)
+#define LED_SYSTEM_PIN 19   // LED untuk status system (Yellow)
+#define BUZZER_PIN 14       // Buzzer untuk startup dan notifikasi
 
-// Buzzer for intro
-#define BUZZER_PIN 14
+// Config button
+#define CONFIG_BUTTON_PIN 0  // GPIO 0 (BOOT button)
 
 bool isConfigMode = false;
+bool buttonPressed = false;
+unsigned long buttonPressTime = 0;
+const long buttonHoldTime = 3000; // Hold 3 seconds
 
-// Display variables
-String currentDisplay = "System Siap Digunakan";
-unsigned long lastDisplayUpdate = 0;
-const long displayInterval = 3000;
-int displayMode = 0; // 0=ESP32_1, 1=ESP32_2, 2=ESP32_3
+// LED Status Variables
+bool esp1_online = false;
+bool esp2_online = false;
+bool esp3_online = false;
+bool system_ready = false;
 
 // Status from all ESP32s
 String esp1_status = "Lamp: OFF";
 String esp2_status = "Clothesline: CLOSED";
 String esp3_status = "Door: LOCKED";
-bool esp1_online = false;
-bool esp2_online = false;
-bool esp3_online = false;
 
 unsigned long lastHeartbeat = 0;
 const long heartbeatInterval = 10000;
+
+// LED Control Functions
+void setLED(int pin, bool state) {
+  digitalWrite(pin, state ? HIGH : LOW);
+}
+
+void setAllLEDs(bool state) {
+  setLED(LED_ESP1_PIN, state);
+  setLED(LED_ESP2_PIN, state);
+  setLED(LED_ESP3_PIN, state);
+  setLED(LED_SYSTEM_PIN, state);
+}
+
+void playStartupAnimation() {
+  Serial.println("========================================");
+  Serial.println("🚀 ESP32 #4 - WiFi Controller Starting");
+  Serial.println("========================================");
+  Serial.println("Playing startup animation...");
+  
+  // Turn off all LEDs first
+  setAllLEDs(false);
+  delay(500);
+  
+  // 3 beeps with system LED
+  Serial.println("Phase 1: 3 startup beeps");
+  for (int i = 0; i < 3; i++) {
+    Serial.println("Beep " + String(i + 1) + "/3");
+    setLED(LED_SYSTEM_PIN, true);
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(200);
+    setLED(LED_SYSTEM_PIN, false);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(200);
+  }
+  
+  delay(500);
+  
+  // LED running animation (bolak-balik 2x)
+  Serial.println("Phase 2: LED running animation (2 cycles)");
+  for (int cycle = 0; cycle < 2; cycle++) {
+    Serial.println("Cycle " + String(cycle + 1) + "/2");
+    
+    // Forward: ESP1 -> ESP2 -> ESP3 -> SYSTEM
+    int leds[] = {LED_ESP1_PIN, LED_ESP2_PIN, LED_ESP3_PIN, LED_SYSTEM_PIN};
+    for (int i = 0; i < 4; i++) {
+      setAllLEDs(false);
+      setLED(leds[i], true);
+      delay(300);
+    }
+    
+    // Backward: SYSTEM -> ESP3 -> ESP2 -> ESP1
+    for (int i = 3; i >= 0; i--) {
+      setAllLEDs(false);
+      setLED(leds[i], true);
+      delay(300);
+    }
+  }
+  
+  delay(500);
+  
+  // Final: All LEDs ON
+  Serial.println("Phase 3: All systems ready - All LEDs ON");
+  setAllLEDs(true);
+  
+  // Victory beep
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(500);
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  Serial.println("✅ Startup animation completed!");
+  Serial.println("🌟 ESP32 #4 WiFi Controller is ready!");
+  Serial.println("========================================");
+  
+  system_ready = true;
+}
 
 // WiFi Config Functions
 bool isWiFiConfigured() {
@@ -80,30 +157,38 @@ void forwardWiFiToSlaves(String ssid, String password) {
   Serial.println("Forwarding WiFi config to all ESP32s...");
   Serial.println("========================================");
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Forwarding WiFi");
-  lcd.setCursor(0, 1);
-  lcd.print("To All ESP32...");
+  // LED animation: blink system LED while forwarding
+  for (int i = 0; i < 5; i++) {
+    setLED(LED_SYSTEM_PIN, true);
+    delay(100);
+    setLED(LED_SYSTEM_PIN, false);
+    delay(100);
+  }
   
   // Send to ESP32 #1
   SerialToESP1.print(wifiData);
   Serial.println("→ Sent to ESP32 #1");
+  setLED(LED_ESP1_PIN, true);
   delay(100);
   
   // Send to ESP32 #2
   SerialToESP2.print(wifiData);
   Serial.println("→ Sent to ESP32 #2");
+  setLED(LED_ESP2_PIN, true);
   delay(100);
   
   // Send to ESP32 #3 via GPIO 18
   Serial1.begin(9600, SERIAL_8N1, -1, TX_TO_ESP3);
   Serial1.print(wifiData);
   Serial.println("→ Sent to ESP32 #3");
+  setLED(LED_ESP3_PIN, true);
   
   Serial.println("========================================");
   Serial.println("✓ WiFi config forwarded to all slaves!");
   Serial.println("========================================");
+  
+  // All LEDs on to show completion
+  setAllLEDs(true);
 }
 
 void startConfigMode() {
@@ -112,12 +197,22 @@ void startConfigMode() {
   Serial.println("Starting Config Mode...");
   Serial.println("========================================");
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Config Mode");
-  lcd.setCursor(0, 1);
-  lcd.print("Connect to AP");
+  // LED pattern: blink all LEDs to indicate config mode
+  for (int i = 0; i < 3; i++) {
+    setAllLEDs(true);
+    delay(200);
+    setAllLEDs(false);
+    delay(200);
+  }
   
+  // Keep system LED on during config mode
+  setLED(LED_SYSTEM_PIN, true);
+  
+  // Disconnect from current WiFi
+  WiFi.disconnect();
+  delay(100);
+  
+  // Start Access Point
   WiFi.mode(WIFI_AP);
   WiFi.softAP(ap_ssid, ap_password);
   
@@ -134,6 +229,18 @@ void startConfigMode() {
   
   server.begin();
   Serial.println("Web server started!");
+  
+  // LED pattern: ESP1, ESP2, ESP3 blink in sequence during config mode
+  setLED(LED_ESP1_PIN, true);
+  delay(300);
+  setLED(LED_ESP1_PIN, false);
+  setLED(LED_ESP2_PIN, true);
+  delay(300);
+  setLED(LED_ESP2_PIN, false);
+  setLED(LED_ESP3_PIN, true);
+  delay(300);
+  setLED(LED_ESP3_PIN, false);
+  setLED(LED_SYSTEM_PIN, true); // Keep system LED on
 }
 
 void handleRoot() {
@@ -174,9 +281,13 @@ void handleSave() {
   Serial.println("SSID: " + ssid);
   Serial.println("========================================");
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Saving WiFi...");
+  // LED animation: rapid blink to show saving
+  for (int i = 0; i < 5; i++) {
+    setAllLEDs(true);
+    delay(100);
+    setAllLEDs(false);
+    delay(100);
+  }
   
   // Save to EEPROM
   for (int i = 0; i < ssid.length(); i++) {
@@ -210,12 +321,15 @@ void handleSave() {
   
   server.send(200, "text/html", html);
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("All ESP32");
-  lcd.setCursor(0, 1);
-  lcd.print("Restarting...");
+  // LED success pattern: all LEDs blink together 3 times
+  for (int i = 0; i < 3; i++) {
+    setAllLEDs(true);
+    delay(300);
+    setAllLEDs(false);
+    delay(300);
+  }
   
+  Serial.println("🔄 All ESP32 devices restarting...");
   delay(3000);
   ESP.restart();
 }
@@ -246,11 +360,9 @@ bool connectToWiFi() {
   Serial.println("========================================");
   Serial.println("SSID: " + ssid);
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Connecting WiFi");
-  lcd.setCursor(0, 1);
-  lcd.print(ssid);
+  // LED animation: system LED blinks while connecting
+  setAllLEDs(false);
+  setLED(LED_SYSTEM_PIN, true);
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid.c_str(), password.c_str());
@@ -260,6 +372,8 @@ bool connectToWiFi() {
     
     int wait = 0;
     while (WiFi.status() != WL_CONNECTED && wait < 10) {
+      // Blink system LED while connecting
+      setLED(LED_SYSTEM_PIN, !digitalRead(LED_SYSTEM_PIN));
       delay(500);
       Serial.print(".");
       wait++;
@@ -270,76 +384,55 @@ bool connectToWiFi() {
       Serial.println("IP: " + WiFi.localIP().toString());
       Serial.println("========================================");
       
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("WiFi Connected!");
-      lcd.setCursor(0, 1);
-      lcd.print(WiFi.localIP().toString());
-      delay(2000);
+      // Success pattern: all LEDs on
+      setAllLEDs(true);
+      delay(1000);
       
       return true;
     } else {
       Serial.println(" Failed!");
+      // Failure pattern: rapid blink
+      for (int i = 0; i < 3; i++) {
+        setLED(LED_SYSTEM_PIN, true);
+        delay(100);
+        setLED(LED_SYSTEM_PIN, false);
+        delay(100);
+      }
     }
   }
   
   Serial.println("✗ WiFi Failed after 3 attempts");
   Serial.println("========================================");
   
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi Failed!");
-  lcd.setCursor(0, 1);
-  lcd.print("Starting AP...");
-  delay(2000);
+  // Failure pattern: all LEDs blink red (off/on pattern)
+  for (int i = 0; i < 5; i++) {
+    setAllLEDs(false);
+    delay(200);
+    setAllLEDs(true);
+    delay(200);
+  }
+  setAllLEDs(false);
   
   return false;
 }
 
-void showIntroAnimation() {
-  // Buzzer beep sequence
-  beep(1);
-  delay(200);
-  beep(1);
-  delay(200);
-  beep(3);
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("Smart Home IoT");
-  lcd.setCursor(0, 1);
-  lcd.print("ESP32 #4");
-  delay(1500);
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi Controller");
-  lcd.setCursor(0, 1);
-  lcd.print("& LCD Display");
-  delay(1500);
-  
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("XI SIJA 1");
-  lcd.setCursor(0, 1);
-  lcd.print("SMKN 7 SEMARANG");
-  delay(2000);
-  
-  beep(2);
-}
-
-void beep(int times) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    delay(100);
-    digitalWrite(BUZZER_PIN, LOW);
-    delay(100);
-  }
-}
+// Removed old showIntroAnimation and beep functions - replaced with playStartupAnimation
 
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_SIZE);
+  
+  // Initialize LED pins
+  pinMode(LED_ESP1_PIN, OUTPUT);
+  pinMode(LED_ESP2_PIN, OUTPUT);
+  pinMode(LED_ESP3_PIN, OUTPUT);
+  pinMode(LED_SYSTEM_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP);
+  
+  // Turn off all LEDs initially
+  setAllLEDs(false);
+  digitalWrite(BUZZER_PIN, LOW);
   
   // Initialize Serial TO Slaves (for WiFi config)
   SerialToESP1.begin(9600, SERIAL_8N1, -1, TX_TO_ESP1); // TX only
@@ -351,14 +444,8 @@ void setup() {
   SerialFromESP2.begin(9600, SERIAL_8N1, RX_FROM_ESP2, -1); // RX only
   // ESP32 #3 logs on GPIO 2 (will be polled)
   
-  // Initialize LCD
-  lcd.init();
-  lcd.backlight();
-  
-  pinMode(BUZZER_PIN, OUTPUT);
-  
-  // Show intro animation
-  showIntroAnimation();
+  // Play startup animation
+  playStartupAnimation();
   
   // Try to connect to WiFi
   if (!connectToWiFi()) {
@@ -367,11 +454,7 @@ void setup() {
     client.setServer(mqtt_server, mqtt_port);
     client.setCallback(callback);
     
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("System Siap");
-    lcd.setCursor(0, 1);
-    lcd.print("Digunakan");
+    Serial.println("🌐 WiFi connected - System fully operational");
   }
 }
 
@@ -398,41 +481,67 @@ void callback(char* topic, byte* payload, unsigned int length) {
     }
   }
   
-  // Ping response
-  if (String(topic) == "iot/esp32_4/ping") {
-    if (message == "PING") {
-      client.publish("iot/esp32_4/pong", "PONG");
+  // Status from ESP32 #1
+  if (String(topic) == "iot/esp32_1/status") {
+    if (message == "WiFi Reset" || message.indexOf("WiFi:RESET") >= 0) {
+      esp1_online = false;
+      esp1_status = "WiFi Reset";
+      Serial.println("📴 ESP32 #1: WiFi configuration reset");
+    } else {
+      esp1_status = message;
+      esp1_online = true;
+      Serial.println("📊 ESP32 #1 Status: " + message);
     }
   }
   
-  // Status from ESP32 #1
-  if (String(topic) == "iot/esp32_1/status") {
-    esp1_status = message;
-    updateLCDWithStatus(message);
-  }
-  
   if (String(topic) == "iot/esp32_1/heartbeat") {
-    esp1_online = true;
+    if (message == "OFFLINE" || message == "RESET") {
+      esp1_online = false;
+    } else {
+      esp1_online = true;
+    }
   }
   
   // Status from ESP32 #2
   if (String(topic) == "iot/esp32_2/status") {
-    esp2_status = message;
-    updateLCDWithStatus(message);
+    if (message == "WiFi Reset" || message.indexOf("WiFi:RESET") >= 0) {
+      esp2_online = false;
+      esp2_status = "WiFi Reset";
+      Serial.println("📴 ESP32 #2: WiFi configuration reset");
+    } else {
+      esp2_status = message;
+      esp2_online = true;
+      Serial.println("📊 ESP32 #2 Status: " + message);
+    }
   }
   
   if (String(topic) == "iot/esp32_2/heartbeat") {
-    esp2_online = true;
+    if (message == "OFFLINE" || message == "RESET") {
+      esp2_online = false;
+    } else {
+      esp2_online = true;
+    }
   }
   
   // Status from ESP32 #3
   if (String(topic) == "iot/esp32_3/status") {
-    esp3_status = message;
-    updateLCDWithStatus(message);
+    if (message == "WiFi Reset" || message.indexOf("WiFi:RESET") >= 0) {
+      esp3_online = false;
+      esp3_status = "WiFi Reset";
+      Serial.println("📴 ESP32 #3: WiFi configuration reset");
+    } else {
+      esp3_status = message;
+      esp3_online = true;
+      Serial.println("📊 ESP32 #3 Status: " + message);
+    }
   }
   
   if (String(topic) == "iot/esp32_3/heartbeat") {
-    esp3_online = true;
+    if (message == "OFFLINE" || message == "RESET") {
+      esp3_online = false;
+    } else {
+      esp3_online = true;
+    }
   }
 }
 
@@ -478,33 +587,154 @@ void updateWiFiCredentials(String message) {
   ESP.restart();
 }
 
-void updateLCDWithStatus(String status) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
+void updateLEDStatus() {
+  // Update LED status based on ESP32 online status
+  setLED(LED_ESP1_PIN, esp1_online);
+  setLED(LED_ESP2_PIN, esp2_online);
+  setLED(LED_ESP3_PIN, esp3_online);
+  setLED(LED_SYSTEM_PIN, system_ready && (esp1_online || esp2_online || esp3_online));
   
-  // Show which ESP32 and status
-  if (status.startsWith("Lamp:") || status.startsWith("Feeding")) {
-    lcd.print("ESP32 1:");
-    lcd.setCursor(0, 1);
-    lcd.print(status);
-  } else if (status.startsWith("Clothesline:") || status.startsWith("Sorting:") || status.startsWith("Scanning")) {
-    lcd.print("ESP32 2:");
-    lcd.setCursor(0, 1);
-    lcd.print(status);
-  } else if (status.startsWith("Door:") || status.startsWith("Access")) {
-    lcd.print("ESP32 3:");
-    lcd.setCursor(0, 1);
-    lcd.print(status);
+  // Debug LED status
+  static unsigned long lastLEDDebug = 0;
+  if (millis() - lastLEDDebug > 5000) {
+    Serial.println("========================================");
+    Serial.println("📊 LED Status Monitor");
+    Serial.println("ESP32 #1 (Blue): " + String(esp1_online ? "ON" : "OFF") + " - " + esp1_status);
+    Serial.println("ESP32 #2 (Green): " + String(esp2_online ? "ON" : "OFF") + " - " + esp2_status);
+    Serial.println("ESP32 #3 (Red): " + String(esp3_online ? "ON" : "OFF") + " - " + esp3_status);
+    Serial.println("System (Yellow): " + String(system_ready ? "READY" : "STARTING"));
+    Serial.println("========================================");
+    lastLEDDebug = millis();
+  }
+}
+
+void checkConfigButton() {
+  // Read button state (LOW = pressed because of pullup)
+  if (digitalRead(CONFIG_BUTTON_PIN) == LOW) {
+    if (!buttonPressed) {
+      // Button just pressed
+      buttonPressed = true;
+      buttonPressTime = millis();
+      
+      // LED pattern: show button press with system LED
+      setLED(LED_SYSTEM_PIN, true);
+      delay(100);
+      setLED(LED_SYSTEM_PIN, false);
+      
+      Serial.println("Config button pressed...");
+    } else {
+      // Button still held
+      unsigned long holdDuration = millis() - buttonPressTime;
+      
+      if (holdDuration >= buttonHoldTime && !isConfigMode) {
+        // Button held for 3 seconds - start config mode
+        Serial.println("========================================");
+        Serial.println("Config button held for 3 seconds!");
+        Serial.println("Resetting all ESP32 WiFi...");
+        Serial.println("========================================");
+        
+        // LED pattern: all LEDs blink rapidly for reset
+        Serial.println("🔴 Resetting all ESP32 WiFi configurations...");
+        for (int i = 0; i < 10; i++) {
+          setAllLEDs(true);
+          delay(100);
+          setAllLEDs(false);
+          delay(100);
+        }
+        
+        // Buzzer alert for reset
+        for (int i = 0; i < 2; i++) {
+          digitalWrite(BUZZER_PIN, HIGH);
+          delay(200);
+          digitalWrite(BUZZER_PIN, LOW);
+          delay(200);
+        }
+        
+        // Send reset command to all ESP32s via serial
+        resetAllESP32WiFi();
+        
+        // LED feedback: show each ESP32 reset status
+        Serial.println("🔄 Waiting for ESP32s to reset...");
+        
+        // Blink each LED to show reset command sent
+        setLED(LED_ESP1_PIN, true);
+        delay(500);
+        setLED(LED_ESP1_PIN, false);
+        
+        setLED(LED_ESP2_PIN, true);
+        delay(500);
+        setLED(LED_ESP2_PIN, false);
+        
+        setLED(LED_ESP3_PIN, true);
+        delay(500);
+        setLED(LED_ESP3_PIN, false);
+        
+        delay(1000);
+        
+        // Config mode LED pattern
+        for (int i = 0; i < 3; i++) {
+          setAllLEDs(true);
+          delay(300);
+          setAllLEDs(false);
+          delay(300);
+        }
+        
+        delay(1000);
+        
+        startConfigMode();
+      }
+    }
   } else {
-    lcd.print(status.substring(0, 16));
-    if (status.length() > 16) {
-      lcd.setCursor(0, 1);
-      lcd.print(status.substring(16, 32));
+    // Button released
+    if (buttonPressed) {
+      unsigned long holdDuration = millis() - buttonPressTime;
+      
+      if (holdDuration < buttonHoldTime) {
+        // Button released before 3 seconds
+        Serial.println("Button released (hold 3s for config)");
+        
+        // Brief LED flash to acknowledge button press
+        setAllLEDs(true);
+        delay(200);
+        updateLEDStatus(); // Return to normal status
+      }
+      
+      buttonPressed = false;
     }
   }
+}
+
+void resetAllESP32WiFi() {
+  Serial.println("========================================");
+  Serial.println("🔄 RESET ALL ESP32 WiFi Configuration");
+  Serial.println("Sending RESET_WIFI command to all ESP32s...");
+  Serial.println("========================================");
   
-  currentDisplay = status;
-  lastDisplayUpdate = millis();
+  // Send to ESP32 #1
+  SerialToESP1.println("RESET_WIFI");
+  SerialToESP1.flush(); // Ensure data is sent
+  Serial.println("→ Sent RESET_WIFI to ESP32 #1");
+  delay(200);
+  
+  // Send to ESP32 #2
+  SerialToESP2.println("RESET_WIFI");
+  SerialToESP2.flush(); // Ensure data is sent
+  Serial.println("→ Sent RESET_WIFI to ESP32 #2");
+  delay(200);
+  
+  // Send to ESP32 #3 via GPIO 18 (TX_TO_ESP3)
+  // Initialize Serial1 for ESP32 #3 communication
+  Serial1.begin(9600, SERIAL_8N1, -1, TX_TO_ESP3);
+  delay(100); // Give time for serial to initialize
+  Serial1.println("RESET_WIFI");
+  Serial1.flush(); // Ensure data is sent
+  Serial.println("→ Sent RESET_WIFI to ESP32 #3");
+  delay(200);
+  
+  Serial.println("========================================");
+  Serial.println("✅ RESET_WIFI commands sent to all ESP32s");
+  Serial.println("All ESP32s should disconnect WiFi and clear config");
+  Serial.println("========================================");
 }
 
 void readLogsFromSlaves() {
@@ -513,9 +743,17 @@ void readLogsFromSlaves() {
     String log = SerialFromESP1.readStringUntil('\n');
     if (log.startsWith("ESP1:")) {
       String message = log.substring(5); // Remove "ESP1:" prefix
-      esp1_status = message;
-      updateLCDWithStatus("ESP32 1", message);
-      Serial.println("LOG ESP1: " + message);
+      
+      // Check for WiFi reset status
+      if (message == "WiFi:RESET") {
+        esp1_online = false;
+        esp1_status = "WiFi Reset";
+        Serial.println("📴 ESP1: WiFi configuration reset");
+      } else {
+        esp1_status = message;
+        esp1_online = true;
+        Serial.println("LOG ESP1: " + message);
+      }
     }
   }
   
@@ -524,9 +762,17 @@ void readLogsFromSlaves() {
     String log = SerialFromESP2.readStringUntil('\n');
     if (log.startsWith("ESP2:")) {
       String message = log.substring(5); // Remove "ESP2:" prefix
-      esp2_status = message;
-      updateLCDWithStatus("ESP32 2", message);
-      Serial.println("LOG ESP2: " + message);
+      
+      // Check for WiFi reset status
+      if (message == "WiFi:RESET") {
+        esp2_online = false;
+        esp2_status = "WiFi Reset";
+        Serial.println("📴 ESP2: WiFi configuration reset");
+      } else {
+        esp2_status = message;
+        esp2_online = true;
+        Serial.println("LOG ESP2: " + message);
+      }
     }
   }
   
@@ -535,57 +781,9 @@ void readLogsFromSlaves() {
   // For now, we'll rely on MQTT for ESP32 #3 status
 }
 
-void updateLCDWithStatus(String device, String status) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(device + ":");
-  lcd.setCursor(0, 1);
-  lcd.print(status.substring(0, 16)); // Max 16 chars
-  
-  lastDisplayUpdate = millis();
-}
+// Removed updateLCDWithStatus function - replaced with LED status monitoring
 
-void updateRotatingDisplay() {
-  unsigned long currentMillis = millis();
-  
-  if (currentMillis - lastDisplayUpdate >= displayInterval) {
-    lastDisplayUpdate = currentMillis;
-    displayMode = (displayMode + 1) % 3;
-    
-    lcd.clear();
-    
-    switch (displayMode) {
-      case 0: // ESP32 #1 Status
-        lcd.setCursor(0, 0);
-        lcd.print("ESP32 1:");
-        lcd.print(esp1_online ? "OK" : "X");
-        lcd.setCursor(0, 1);
-        lcd.print(esp1_status);
-        break;
-        
-      case 1: // ESP32 #2 Status
-        lcd.setCursor(0, 0);
-        lcd.print("ESP32 2:");
-        lcd.print(esp2_online ? "OK" : "X");
-        lcd.setCursor(0, 1);
-        lcd.print(esp2_status);
-        break;
-        
-      case 2: // ESP32 #3 Status
-        lcd.setCursor(0, 0);
-        lcd.print("ESP32 3:");
-        lcd.print(esp3_online ? "OK" : "X");
-        lcd.setCursor(0, 1);
-        lcd.print(esp3_status);
-        break;
-    }
-    
-    // Reset online status
-    esp1_online = false;
-    esp2_online = false;
-    esp3_online = false;
-  }
-}
+// Removed updateRotatingDisplay function - replaced with LED status monitoring
 
 void reconnect() {
   while (!client.connected()) {
@@ -621,6 +819,9 @@ void reconnect() {
 }
 
 void loop() {
+  // Check config button (GPIO 0)
+  checkConfigButton();
+  
   // If in config mode, handle web server
   if (isConfigMode) {
     dnsServer.processNextRequest();
@@ -644,8 +845,6 @@ void loop() {
     client.publish("iot/esp32_4/heartbeat", "ONLINE");
   }
   
-  // Update rotating display (only if no recent activity)
-  if (currentMillis - lastDisplayUpdate >= displayInterval) {
-    updateRotatingDisplay();
-  }
+  // Update LED status indicators
+  updateLEDStatus();
 }

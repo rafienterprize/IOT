@@ -9,7 +9,7 @@ import SmartTrash from "@/components/SmartTrash";
 import SmartClothesline from "@/components/SmartClothesline";
 import DeviceStatus from "@/components/DeviceStatus";
 import SmartDoor from "@/components/SmartDoor";
-import LCDDisplay from "@/components/LCDDisplay";
+import SmartGate from "@/components/SmartGate";
 import IntroAnimation from "@/components/IntroAnimation";
 import NetworkPing from "@/components/NetworkPing";
 import { useMQTT } from "@/hooks/useMQTT";
@@ -39,9 +39,6 @@ export default function Home() {
           <>
             <div className="mb-6">
               <DeviceStatus subscribe={subscribe} publish={publish} />
-            </div>
-            <div className="mb-6">
-              <LCDDisplay subscribe={subscribe} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
               <SmartDoor publish={publish} subscribe={subscribe} />
@@ -85,7 +82,7 @@ export default function Home() {
         );
       case "devices":
         return (
-          <div className="max-w-2xl mx-auto">
+          <div>
             <DeviceStatus subscribe={subscribe} publish={publish} />
           </div>
         );
@@ -101,6 +98,12 @@ export default function Home() {
             <SmartDoor publish={publish} subscribe={subscribe} />
           </div>
         );
+      case "gate":
+        return (
+          <div className="max-w-2xl mx-auto">
+            <SmartGate publish={publish} subscribe={subscribe} />
+          </div>
+        );
       default:
         return null;
     }
@@ -112,6 +115,7 @@ export default function Home() {
       devices: "Device Status & Pairing",
       ping: "Network Latency Monitor",
       door: "Smart Door Lock Control",
+      gate: "Smart Gate Control",
       lamp: "Smart Lamp Control",
       gas: "Gas Detector Monitoring",
       feeder: "Fish Feeder Control",

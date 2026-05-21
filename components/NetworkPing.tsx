@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Activity, Wifi, TrendingUp } from "lucide-react";
 
 interface Props {
@@ -52,6 +52,8 @@ export default function NetworkPing({ subscribe, publish }: Props) {
     esp32_4: [],
   });
 
+  const [autoPing, setAutoPing] = useState(true); // Auto ping enabled by default
+
   const MAX_HISTORY = 20; // Keep last 20 pings
 
   useEffect(() => {
@@ -59,6 +61,7 @@ export default function NetworkPing({ subscribe, publish }: Props) {
     const unsubscribe1 = subscribe("iot/esp32_1/pong", () => {
       const now = Date.now();
       const latency = now - pingSent.esp32_1;
+      console.log(`Pong received from ESP32 1, latency: ${latency}ms`);
       setPingData(prev => ({
         ...prev,
         esp32_1: latency,
@@ -120,10 +123,25 @@ export default function NetworkPing({ subscribe, publish }: Props) {
     };
   }, [subscribe, pingSent]);
 
+  // Auto ping every 2 seconds
+  useEffect(() => {
+    if (!autoPing) return;
+
+    const interval = setInterval(() => {
+      pingAll();
+    }, 2000);
+
+    // Initial ping
+    pingAll();
+
+    return () => clearInterval(interval);
+  }, [autoPing]);
+
   const sendPing = (deviceId: string) => {
     const now = Date.now();
     setPingSent(prev => ({ ...prev, [deviceId]: now }));
     publish(`iot/${deviceId}/ping`, "PING");
+    console.log(`Ping sent to ${deviceId} at ${now}`);
   };
 
   const pingAll = () => {
@@ -154,71 +172,122 @@ export default function NetworkPing({ subscribe, publish }: Props) {
   };
 
   const renderChart = (history: number[], color: string, label: string) => {
+    // Generate unique chart ID to prevent key conflicts
+    const chartId = useMemo(() => `chart-${label.toLowerCase().replace(/\s+/g, '-')}-${Math.random().toString(36).substr(2, 9)}`, [label]);
+    
     if (history.length === 0) {
       return (
-        <div className="h-32 flex items-center justify-center text-gray-400 text-sm">
-          No data yet. Click Ping to start.
+        <div className="h-48 flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200">
+          <div className="text-center">
+            <Activity className="w-8 h-8 text-gray-400 mx-auto mb-2" />
+            <div className="text-gray-400 text-sm">Waiting for ping data...</div>
+          </div>
         </div>
       );
     }
 
-    const maxValue = Math.max(...history, 400);
-    const points = history.map((value, index) => {
-      const x = (index / (MAX_HISTORY - 1)) * 100;
-      const y = 100 - (value / maxValue) * 100;
-      return `${x},${y}`;
-    }).join(' ');
-
+    const maxValue = Math.max(...history);
+    const minValue = Math.min(...history);
+    const avgValue = getAverage(history);
+    const yMax = Math.ceil(maxValue / 100) * 100 + 100;
+    
     return (
-      <div className="relative h-32">
-        <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-          {/* Grid lines */}
-          <line x1="0" y1="25" x2="100" y2="25" stroke="#e5e7eb" strokeWidth="0.5" />
-          <line x1="0" y1="50" x2="100" y2="50" stroke="#e5e7eb" strokeWidth="0.5" />
-          <line x1="0" y1="75" x2="100" y2="75" stroke="#e5e7eb" strokeWidth="0.5" />
-          
-          {/* Area under line */}
-          <polygon
-            points={`0,100 ${points} 100,100`}
-            fill={color}
-            opacity="0.2"
-          />
-          
-          {/* Line */}
-          <polyline
-            points={points}
-            fill="none"
-            stroke={color}
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          
-          {/* Points */}
-          {history.map((value, index) => {
-            const x = (index / (MAX_HISTORY - 1)) * 100;
-            const y = 100 - (value / maxValue) * 100;
-            return (
-              <circle
-                key={index}
-                cx={x}
-                cy={y}
-                r="1.5"
-                fill={color}
-              />
-            );
-          })}
-        </svg>
-        
-        {/* Y-axis labels */}
-        <div className="absolute left-0 top-0 text-xs text-gray-400">0ms</div>
-        <div className="absolute left-0 bottom-0 text-xs text-gray-400">{maxValue}ms</div>
-        
+      <div className="bg-white rounded-lg p-4 border border-gray-200">
         {/* Stats */}
-        <div className="absolute right-0 top-0 text-xs bg-white px-2 py-1 rounded shadow">
-          <div className="text-gray-600">Avg: <span className="font-semibold">{getAverage(history)}ms</span></div>
-          <div className="text-gray-600">Min: <span className="font-semibold">{Math.min(...history)}ms</span></div>
-          <div className="text-gray-600">Max: <span className="font-semibold">{Math.max(...history)}ms</span></div>
+        <div className="flex items-center justify-between mb-3 pb-3 border-b">
+          <div className="flex items-center gap-4 text-sm">
+            <div>
+              <span className="text-gray-500">Current:</span>
+              <span className="ml-1 font-bold text-lg" style={{ color }}>{history[history.length - 1]}ms</span>
+            </div>
+            <div>
+              <span className="text-gray-500">Avg:</span>
+              <span className="ml-1 font-semibold">{avgValue}ms</span>
+            </div>
+            <div>
+              <span className="text-gray-500">Min:</span>
+              <span className="ml-1 font-semibold">{minValue}ms</span>
+            </div>
+            <div>
+              <span className="text-gray-500">Max:</span>
+              <span className="ml-1 font-semibold">{maxValue}ms</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Chart Container */}
+        <div className="relative pl-12 pr-4" style={{ height: '180px' }}>
+          {/* Y-axis */}
+          <div className="absolute left-0 top-0 bottom-8 w-10 flex flex-col justify-between text-xs text-gray-500 text-right pr-2">
+            <div>{yMax}</div>
+            <div>{Math.round(yMax * 0.75)}</div>
+            <div>{Math.round(yMax * 0.5)}</div>
+            <div>{Math.round(yMax * 0.25)}</div>
+            <div>0</div>
+          </div>
+
+          {/* Chart SVG */}
+          <div className="absolute left-12 right-4 top-0" style={{ height: 'calc(100% - 32px)' }}>
+            <svg width="100%" height="100%" viewBox="0 0 1000 100" preserveAspectRatio="none" style={{ display: 'block' }}>
+              {/* Grid */}
+              {[0, 25, 50, 75, 100].map((y, i) => (
+                <line
+                  key={`${chartId}-grid-${i}`}
+                  x1="0"
+                  y1={y}
+                  x2="1000"
+                  y2={y}
+                  stroke={i === 0 || i === 4 ? "#d1d5db" : "#f3f4f6"}
+                  strokeWidth="0.5"
+                />
+              ))}
+              
+              {/* Line */}
+              <polyline
+                key={`${chartId}-line`}
+                points={history.map((value, index) => {
+                  const x = (index / Math.max(history.length - 1, 1)) * 1000;
+                  const y = 100 - (value / yMax) * 100;
+                  return `${x},${y}`;
+                }).join(' ')}
+                fill="none"
+                stroke={color}
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+              />
+              
+              {/* Points */}
+              {history.map((value, index) => {
+                const x = (index / Math.max(history.length - 1, 1)) * 1000;
+                const y = 100 - (value / yMax) * 100;
+                return (
+                  <circle
+                    key={`${chartId}-point-${index}`}
+                    cx={x}
+                    cy={y}
+                    r="2"
+                    fill={color}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                );
+              })}
+            </svg>
+          </div>
+
+          {/* X-axis timestamps */}
+          <div className="absolute left-12 right-4 bottom-0 h-8 flex justify-between items-center text-xs text-gray-500">
+            {[0, Math.floor(history.length / 4), Math.floor(history.length / 2), Math.floor(history.length * 3 / 4), history.length - 1].map((index, i) => (
+              <div key={`${chartId}-timestamp-${i}`}>
+                {new Date(Date.now() - (history.length - index - 1) * 2000).toLocaleTimeString('id-ID', { 
+                  hour: '2-digit', 
+                  minute: '2-digit',
+                  second: '2-digit'
+                })}
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -231,14 +300,31 @@ export default function NetworkPing({ subscribe, publish }: Props) {
           <div className="flex items-center gap-3">
             <Activity className="w-6 h-6 text-indigo-600" />
             <h3 className="text-lg font-bold text-gray-800">Network Latency</h3>
+            {autoPing && (
+              <span className="px-2 py-1 bg-green-100 text-green-700 text-xs font-semibold rounded-full animate-pulse">
+                ● LIVE
+              </span>
+            )}
           </div>
-          <button
-            onClick={pingAll}
-            className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 flex items-center gap-2 text-sm font-semibold"
-          >
-            <Wifi className="w-4 h-4" />
-            Ping All
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setAutoPing(!autoPing)}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                autoPing
+                  ? 'bg-red-500 text-white hover:bg-red-600'
+                  : 'bg-green-500 text-white hover:bg-green-600'
+              }`}
+            >
+              {autoPing ? 'Stop Auto Ping' : 'Start Auto Ping'}
+            </button>
+            <button
+              onClick={pingAll}
+              className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 flex items-center gap-2 text-sm font-semibold"
+            >
+              <Wifi className="w-4 h-4" />
+              Ping Now
+            </button>
+          </div>
         </div>
 
         <div className="space-y-3">

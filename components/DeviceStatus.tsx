@@ -43,28 +43,74 @@ export default function DeviceStatus({ subscribe, publish }: Props) {
   const [wifiPassword, setWifiPassword] = useState("");
 
   useEffect(() => {
+    // Load last seen times from localStorage on mount
+    const loadLastSeen = () => {
+      try {
+        const now = new Date();
+        const stored1 = localStorage.getItem('esp32_1_lastSeen');
+        const stored2 = localStorage.getItem('esp32_2_lastSeen');
+        const stored3 = localStorage.getItem('esp32_3_lastSeen');
+        const stored4 = localStorage.getItem('esp32_4_lastSeen');
+        
+        const lastSeen1 = stored1 ? new Date(stored1) : null;
+        const lastSeen2 = stored2 ? new Date(stored2) : null;
+        const lastSeen3 = stored3 ? new Date(stored3) : null;
+        const lastSeen4 = stored4 ? new Date(stored4) : null;
+        
+        // Check if devices are still online based on last seen time
+        const isOnline1 = lastSeen1 && (now.getTime() - lastSeen1.getTime()) < 30000;
+        const isOnline2 = lastSeen2 && (now.getTime() - lastSeen2.getTime()) < 30000;
+        const isOnline3 = lastSeen3 && (now.getTime() - lastSeen3.getTime()) < 30000;
+        const isOnline4 = lastSeen4 && (now.getTime() - lastSeen4.getTime()) < 30000;
+        
+        setDevices(prev => ({
+          ...prev,
+          esp32_1: isOnline1,
+          esp32_2: isOnline2,
+          esp32_3: isOnline3,
+          esp32_4: isOnline4,
+          lastSeen1,
+          lastSeen2,
+          lastSeen3,
+          lastSeen4,
+        }));
+      } catch (e) {
+        console.error('Failed to load last seen times:', e);
+      }
+    };
+    
+    loadLastSeen();
+
     // Subscribe to heartbeat messages
     const unsubscribe1 = subscribe("iot/esp32_1/heartbeat", (message) => {
       if (message === "ONLINE") {
-        setDevices(prev => ({ ...prev, esp32_1: true, lastSeen1: new Date() }));
+        const now = new Date();
+        localStorage.setItem('esp32_1_lastSeen', now.toISOString());
+        setDevices(prev => ({ ...prev, esp32_1: true, lastSeen1: now }));
       }
     });
 
     const unsubscribe2 = subscribe("iot/esp32_2/heartbeat", (message) => {
       if (message === "ONLINE") {
-        setDevices(prev => ({ ...prev, esp32_2: true, lastSeen2: new Date() }));
+        const now = new Date();
+        localStorage.setItem('esp32_2_lastSeen', now.toISOString());
+        setDevices(prev => ({ ...prev, esp32_2: true, lastSeen2: now }));
       }
     });
 
     const unsubscribe3 = subscribe("iot/esp32_3/heartbeat", (message) => {
       if (message === "ONLINE") {
-        setDevices(prev => ({ ...prev, esp32_3: true, lastSeen3: new Date() }));
+        const now = new Date();
+        localStorage.setItem('esp32_3_lastSeen', now.toISOString());
+        setDevices(prev => ({ ...prev, esp32_3: true, lastSeen3: now }));
       }
     });
 
     const unsubscribe4 = subscribe("iot/esp32_4/heartbeat", (message) => {
       if (message === "ONLINE") {
-        setDevices(prev => ({ ...prev, esp32_4: true, lastSeen4: new Date() }));
+        const now = new Date();
+        localStorage.setItem('esp32_4_lastSeen', now.toISOString());
+        setDevices(prev => ({ ...prev, esp32_4: true, lastSeen4: now }));
       }
     });
 
@@ -85,12 +131,13 @@ export default function DeviceStatus({ subscribe, publish }: Props) {
       setDevices(prev => ({ ...prev, status4: message }));
     });
 
-    // Check for offline devices every 30 seconds
+    // Check for offline devices every 5 seconds
     const interval = setInterval(() => {
       const now = new Date();
       setDevices(prev => {
         const newState = { ...prev };
         
+        // Mark offline if no heartbeat for 30 seconds
         if (prev.lastSeen1 && (now.getTime() - prev.lastSeen1.getTime()) > 30000) {
           newState.esp32_1 = false;
         }
